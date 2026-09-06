@@ -1,0 +1,2 @@
+ALTER TABLE "cart_items" DROP CONSTRAINT "cart_items_quantity_positive";--> statement-breakpoint
+ALTER TABLE "cart_items" ADD CONSTRAINT "cart_items_quantity_range" CHECK ("cart_items"."quantity" >= 1 AND "cart_items"."quantity" <= 99);

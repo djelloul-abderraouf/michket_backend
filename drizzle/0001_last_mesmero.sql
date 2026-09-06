@@ -1,0 +1,3 @@
+ALTER TABLE "product_images" ADD COLUMN "storage_path" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "product_images_storage_path_unique_idx" ON "product_images" USING btree ("storage_path") WHERE "product_images"."storage_path" IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "product_images_one_primary_per_product_idx" ON "product_images" USING btree ("product_id") WHERE "product_images"."is_primary" = true;
