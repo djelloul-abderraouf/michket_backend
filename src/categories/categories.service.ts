@@ -11,7 +11,7 @@ import {
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import * as schema from '../database/schema';
-import { categories } from '../database/schema';
+import { categories, categoryImages } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 
 @Injectable()
@@ -52,7 +52,32 @@ export class CategoriesService {
       );
     }
 
-    return category;
+    // Fetch children (subcategories) if this is a main category
+    const children = category.parentId === null
+      ? await this.db
+          .select()
+          .from(categories)
+          .where(
+            and(
+              eq(categories.parentId, category.id),
+              eq(categories.isActive, true),
+            ),
+          )
+          .orderBy(asc(categories.sortOrder), asc(categories.name))
+      : [];
+
+    // Fetch hero images for this category
+    const heroImages = await this.db
+      .select()
+      .from(categoryImages)
+      .where(eq(categoryImages.categoryId, category.id))
+      .orderBy(asc(categoryImages.sortOrder));
+
+    return {
+      ...category,
+      children,
+      heroImages,
+    };
   }
 
   async findById(id: string) {

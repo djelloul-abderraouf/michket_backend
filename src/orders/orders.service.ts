@@ -37,6 +37,7 @@ import {
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { DeliveryService } from '../delivery/delivery.service';
 import { OrderExpirationQueueService } from '../queue/order-expiration.queue';
+import { PromotionsService } from '../promotions/promotions.service';
 
 type DbTransaction = Parameters<
   Parameters<
@@ -78,7 +79,6 @@ export type CreateOrderInput = {
 
   notes?: string;
   promoCode?: string;
-  discountCents?: number;
 };
 
 export type OrderIdempotencyContext = {
@@ -122,6 +122,7 @@ export class OrdersService {
     private readonly db: NodePgDatabase<typeof schema>,
     private readonly deliveryService: DeliveryService,
     private readonly orderExpirationQueue: OrderExpirationQueueService,
+    private readonly promotionsService: PromotionsService,
     configService: ConfigService,
   ) {
     this.orderAccessSecret =
@@ -156,8 +157,13 @@ export class OrdersService {
       orderData.deliveryType as 'home' | 'office',
     );
 
+    const normalizedPromoCode =
+      orderData.promoCode?.trim().toUpperCase() ||
+      undefined;
+
     const normalizedOrderData = {
       ...orderData,
+      promoCode: normalizedPromoCode,
       wilayaName: authoritativeWilayaName,
       deliveryFeeCents: deliveryRate.amountCents,
     };
@@ -455,6 +461,13 @@ export class OrdersService {
 
       if (status === 'cancelled') {
         await this.releaseReservedStock(tx, items);
+
+        if (order.promoCode) {
+          await this.promotionsService.releaseForCancelledOrder(
+            tx,
+            order.promoCode,
+          );
+        }
       }
 
       if (status === 'delivered') {
@@ -541,6 +554,13 @@ export class OrdersService {
         .where(eq(orderItems.orderId, order.id));
 
       await this.releaseReservedStock(tx, items);
+
+      if (order.promoCode) {
+        await this.promotionsService.releaseForCancelledOrder(
+          tx,
+          order.promoCode,
+        );
+      }
 
       const now = new Date();
       const cleanReason =
@@ -759,7 +779,21 @@ export class OrdersService {
       });
     }
 
-    const discountCents = orderData.discountCents ?? 0;
+    let promoCode: string | null = null;
+    let discountCents = 0;
+
+    if (orderData.promoCode) {
+      const promotion =
+        await this.promotionsService.consumeForCheckout(
+          tx,
+          orderData.promoCode,
+          subtotalCents,
+        );
+
+      promoCode = promotion.code;
+      discountCents =
+        promotion.discountCents;
+    }
 
     const totalCents =
       subtotalCents +
@@ -802,7 +836,7 @@ export class OrdersService {
         deliveryType: orderData.deliveryType,
 
         notes: orderData.notes?.trim() || null,
-        promoCode: orderData.promoCode?.trim() || null,
+        promoCode,
 
         paymentMethod: 'cod',
         paymentStatus: 'pending',
@@ -963,16 +997,6 @@ export class OrdersService {
       );
     }
 
-    const discountCents = orderData.discountCents ?? 0;
-
-    if (
-      !Number.isInteger(discountCents) ||
-      discountCents < 0
-    ) {
-      throw new BadRequestException(
-        'Discount must be a non-negative integer',
-      );
-    }
   }
 
   private validateItemQuantity(quantity: number): void {

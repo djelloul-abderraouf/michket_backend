@@ -112,6 +112,14 @@ export class DeliveryService {
       );
     }
 
+    // Stop-desk / office delivery stays disabled until we have
+    // an authoritative carrier dataset (for example Yalidine).
+    if (deliveryType === 'office') {
+      throw new ServiceUnavailableException(
+        'Office delivery is temporarily unavailable',
+      );
+    }
+
     const rates = this.getConfiguredRates();
     const wilayaRate = rates[String(toWilayaCode)];
 
@@ -121,15 +129,11 @@ export class DeliveryService {
       );
     }
 
-    const amountCents = wilayaRate[deliveryType];
+    const amountCents = wilayaRate.home;
 
-    if (
-      amountCents === undefined ||
-      !Number.isInteger(amountCents) ||
-      amountCents < 0
-    ) {
+    if (!this.isValidRate(amountCents)) {
       throw new ServiceUnavailableException(
-        `Delivery rate is not configured for ${deliveryType} delivery in wilaya ${toWilayaCode}`,
+        `Delivery rate is not configured for home delivery in wilaya ${toWilayaCode}`,
       );
     }
 
@@ -140,8 +144,26 @@ export class DeliveryService {
     };
   }
 
+  /**
+   * Return all 58 wilayas and tell the frontend which ones can
+   * currently be used for checkout.
+   */
   async getWilayas() {
-    return WILAYAS;
+    const rates = this.getConfiguredRates();
+
+    return WILAYAS.map((wilaya) => {
+      const wilayaRate = rates[String(wilaya.code)];
+      const homeAvailable = this.isValidRate(
+        wilayaRate?.home,
+      );
+
+      return {
+        ...wilaya,
+        available: homeAvailable,
+        homeAvailable,
+        officeAvailable: false,
+      };
+    });
   }
 
   /**
@@ -211,6 +233,15 @@ export class DeliveryService {
         'Delivery rates configuration is invalid',
       );
     }
+  }
+
+  private isValidRate(
+    amountCents: number | undefined,
+  ): amountCents is number {
+    return (
+      Number.isInteger(amountCents) &&
+      (amountCents ?? -1) >= 0
+    );
   }
 
   private assertWilayaCode(wilayaCode: number): void {

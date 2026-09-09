@@ -59,7 +59,7 @@ export class ProductsService {
 
     if (filters?.category) {
       const [category] = await this.db
-        .select({ id: categories.id })
+        .select({ id: categories.id, parentId: categories.parentId })
         .from(categories)
         .where(
           and(
@@ -73,7 +73,24 @@ export class ProductsService {
         return new PaginatedResponseDto([], 0, page, limit);
       }
 
-      conditions.push(eq(products.categoryId, category.id));
+      if (category.parentId === null) {
+        // Main category — include products from this category AND all active children
+        const children = await this.db
+          .select({ id: categories.id })
+          .from(categories)
+          .where(
+            and(
+              eq(categories.parentId, category.id),
+              eq(categories.isActive, true),
+            ),
+          );
+
+        const categoryIds = [category.id, ...children.map((c) => c.id)];
+        conditions.push(inArray(products.categoryId, categoryIds));
+      } else {
+        // Subcategory — exact match only
+        conditions.push(eq(products.categoryId, category.id));
+      }
     }
 
     if (filters?.badge) {

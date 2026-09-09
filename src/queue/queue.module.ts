@@ -28,27 +28,66 @@ export const QUEUE_REDIS_CONNECTION =
           );
         }
 
+        const logger = new Logger('QueueRedis');
+
         const redis = new IORedis(redisUrl, {
+          // Required by BullMQ for blocking operations.
           maxRetriesPerRequest: null,
+
           enableReadyCheck: true,
           lazyConnect: true,
+          keepAlive: 10_000,
+
+          // A temporary network delay must not fail too quickly.
+          connectTimeout: 15_000,
+
+          // Keep reconnecting in the background when Redis/Upstash
+          // is temporarily unreachable. Cap the delay at 10 seconds.
+          retryStrategy: (times) =>
+            Math.min(times * 1_000, 10_000),
         });
 
         redis.on('error', (error) => {
-          Logger.error(
+          logger.error(
             error.message,
             error.stack,
-            'QueueRedis',
           );
         });
 
-        await redis.connect();
-        await redis.ping();
+        redis.on('ready', () => {
+          logger.log(
+            'BullMQ Redis connection ready',
+          );
+        });
 
-        Logger.log(
-          'BullMQ Redis connection ready',
-          'QueueRedis',
-        );
+        redis.on('reconnecting', (delay: number) => {
+          logger.warn(
+            `Redis reconnecting in ${delay} ms`,
+          );
+        });
+
+        /*
+         * Redis/BullMQ is important, but PostgreSQL remains the source
+         * of truth for orders and the reconciler can recover missed
+         * expiration jobs later.
+         *
+         * Therefore a temporary Redis outage must NOT prevent the whole
+         * Nest application from starting.
+         */
+        try {
+          await redis.connect();
+          await redis.ping();
+        } catch (error) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : String(error);
+
+          logger.warn(
+            `Redis unavailable during startup: ${message}. ` +
+              'Backend will start and Redis will reconnect in the background.',
+          );
+        }
 
         return redis;
       },
@@ -65,9 +104,16 @@ export class QueueModule
   ) {}
 
   async onApplicationShutdown(): Promise<void> {
-    if (this.redis.status === 'ready') {
-      await this.redis.quit();
-      return;
+    if (
+      this.redis.status === 'ready' ||
+      this.redis.status === 'connect'
+    ) {
+      try {
+        await this.redis.quit();
+        return;
+      } catch {
+        // Fall back to a hard disconnect below.
+      }
     }
 
     this.redis.disconnect();

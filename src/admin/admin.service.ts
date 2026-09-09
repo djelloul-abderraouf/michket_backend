@@ -3,15 +3,18 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
   and,
   asc,
+  count,
   desc,
   eq,
   inArray,
   isNull,
+  ne,
   sql,
 } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -19,15 +22,18 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '../database/schema';
 import {
   categories,
+  categoryImages,
   inventory,
   orders,
   productImages,
   products,
   productVariants,
+  promotions,
   users,
 } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { OrdersService } from '../orders/orders.service';
+import { MediaService } from '../media/media.service';
 
 type OrderStatus =
   | 'pending'
@@ -59,6 +65,7 @@ type ProductImageInput = {
   altText?: string;
   sortOrder?: number;
   isPrimary?: boolean;
+  variantId?: string | null;
 };
 
 type ProductVariantInput = {
@@ -72,6 +79,22 @@ type ProductVariantInput = {
   isActive?: boolean;
   inventory?: InventoryInput;
 };
+
+type UpdateProductImageInput = {
+  altText?: string;
+  sortOrder?: number;
+  isPrimary?: boolean;
+  variantId?: string | null;
+};
+
+type ProductImageOrderInput = {
+  imageId: string;
+  sortOrder: number;
+};
+
+type UpdateProductVariantInput = Partial<
+  Omit<ProductVariantInput, 'inventory'>
+>;
 
 export type CreateAdminProductInput = {
   name: string;
@@ -94,9 +117,23 @@ export type CreateAdminProductInput = {
   inventory?: InventoryInput;
 };
 
-export type UpdateAdminProductInput = Partial<
-  Omit<CreateAdminProductInput, 'images' | 'variants' | 'inventory'>
->;
+export type UpdateAdminProductInput = {
+  name?: string;
+  slug?: string;
+  categoryId?: string;
+  description?: string | null;
+  shortDescription?: string | null;
+  priceCents?: number;
+  compareAtPriceCents?: number | null;
+  badge?: ProductBadge | null;
+  occasions?: string[] | null;
+  isActive?: boolean;
+  isPersonalizable?: boolean;
+  personalizationPrompt?: string | null;
+  personalizationConfig?: Record<string, unknown> | null;
+  metaTitle?: string | null;
+  metaDescription?: string | null;
+};
 
 export type UpdateAdminInventoryInput = {
   variantId?: string;
@@ -109,7 +146,11 @@ export type CreateAdminCategoryInput = {
   name: string;
   slug: string;
   description?: string;
+  pageTitle?: string;
+  productsTitle?: string;
+  filterLabel?: string;
   imageUrl?: string;
+  imageStoragePath?: string;
   href?: string;
   parentId?: string | null;
   isActive?: boolean;
@@ -120,6 +161,22 @@ export type CreateAdminCategoryInput = {
 
 export type UpdateAdminCategoryInput =
   Partial<CreateAdminCategoryInput>;
+
+export type CreateAdminPromotionInput = {
+  code: string;
+  description?: string;
+  discountType: 'percentage' | 'fixed';
+  discountValue: number;
+  minSubtotalCents?: number;
+  maxDiscountCents?: number | null;
+  startsAt?: string | null;
+  endsAt?: string | null;
+  isActive?: boolean;
+  usageLimit?: number | null;
+};
+
+export type UpdateAdminPromotionInput =
+  Partial<CreateAdminPromotionInput>;
 
 const ORDER_STATUSES: readonly OrderStatus[] = [
   'pending',
@@ -133,10 +190,15 @@ const ORDER_STATUSES: readonly OrderStatus[] = [
 
 @Injectable()
 export class AdminService {
+  private readonly logger = new Logger(
+    AdminService.name,
+  );
+
   constructor(
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
     private readonly ordersService: OrdersService,
+    private readonly mediaService: MediaService,
   ) {}
 
   async getDashboard() {
@@ -322,7 +384,16 @@ export class AdminService {
           slug,
           description:
             input.description?.trim() || null,
-          imageUrl: input.imageUrl?.trim() || null,
+          pageTitle:
+            input.pageTitle?.trim() || null,
+          productsTitle:
+            input.productsTitle?.trim() || null,
+          filterLabel:
+            input.filterLabel?.trim() || null,
+          imageUrl:
+            input.imageUrl?.trim() || null,
+          imageStoragePath:
+            input.imageStoragePath?.trim() || null,
           href: input.href?.trim() || null,
           parentId: input.parentId ?? null,
           isActive: input.isActive ?? true,
@@ -404,6 +475,9 @@ export class AdminService {
       );
     }
 
+    // Track old image for Storage cleanup after DB update
+    const oldImageStoragePath = existing.imageStoragePath;
+
     const updateData: Partial<
       typeof categories.$inferInsert
     > = {
@@ -422,17 +496,37 @@ export class AdminService {
 
     if (input.description !== undefined) {
       updateData.description =
-        input.description.trim() || null;
+        input.description?.trim() || null;
+    }
+
+    if (input.pageTitle !== undefined) {
+      updateData.pageTitle =
+        input.pageTitle?.trim() || null;
+    }
+
+    if (input.productsTitle !== undefined) {
+      updateData.productsTitle =
+        input.productsTitle?.trim() || null;
+    }
+
+    if (input.filterLabel !== undefined) {
+      updateData.filterLabel =
+        input.filterLabel?.trim() || null;
     }
 
     if (input.imageUrl !== undefined) {
       updateData.imageUrl =
-        input.imageUrl.trim() || null;
+        input.imageUrl?.trim() || null;
+    }
+
+    if (input.imageStoragePath !== undefined) {
+      updateData.imageStoragePath =
+        input.imageStoragePath?.trim() || null;
     }
 
     if (input.href !== undefined) {
       updateData.href =
-        input.href.trim() || null;
+        input.href?.trim() || null;
     }
 
     if (input.parentId !== undefined) {
@@ -449,13 +543,23 @@ export class AdminService {
 
     if (input.metaTitle !== undefined) {
       updateData.metaTitle =
-        input.metaTitle.trim() || null;
+        input.metaTitle?.trim() || null;
     }
 
     if (input.metaDescription !== undefined) {
       updateData.metaDescription =
-        input.metaDescription.trim() || null;
+        input.metaDescription?.trim() || null;
     }
+
+    // Determine if image was replaced or removed
+    const newImageStoragePath =
+      updateData.imageStoragePath !== undefined
+        ? updateData.imageStoragePath
+        : undefined;
+
+    const imageChanged =
+      newImageStoragePath !== undefined &&
+      newImageStoragePath !== oldImageStoragePath;
 
     try {
       const [updated] = await this.db
@@ -464,8 +568,30 @@ export class AdminService {
         .where(eq(categories.id, categoryId))
         .returning();
 
+      // After successful DB update, clean up old Storage file
+      if (imageChanged && oldImageStoragePath) {
+        try {
+          await this.mediaService.delete(oldImageStoragePath);
+        } catch (error) {
+          // Log but don't throw — DB update succeeded
+          this.logger.warn(
+            `Failed to delete old category image from storage: ${oldImageStoragePath}`,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
+
       return updated;
     } catch (error) {
+      // If DB update fails and a new image was uploaded, clean up the orphan
+      if (imageChanged && newImageStoragePath) {
+        try {
+          await this.mediaService.delete(newImageStoragePath);
+        } catch {
+          // Best-effort cleanup
+        }
+      }
+
       if (this.isUniqueViolation(error)) {
         throw new ConflictException(
           'Category slug already exists',
@@ -589,6 +715,23 @@ export class AdminService {
       );
     }
 
+    // Normalize personalization
+    const personalizationEnabled =
+      input.isPersonalizable === true;
+
+    const normalizedPersonalization =
+      this.validatePersonalization(
+        input.isPersonalizable,
+        input.personalizationConfig,
+        input.personalizationPrompt,
+      );
+
+    const isPersonalizableFinal = personalizationEnabled;
+    const personalizationPromptFinal =
+      normalizedPersonalization.prompt;
+    const personalizationConfigFinal =
+      normalizedPersonalization.config;
+
     return this.db.transaction(async (tx) => {
       try {
         const [product] = await tx
@@ -608,13 +751,9 @@ export class AdminService {
             badge: input.badge ?? null,
             occasions: input.occasions ?? null,
             isActive: input.isActive ?? true,
-            isPersonalizable:
-              input.isPersonalizable ?? false,
-            personalizationPrompt:
-              input.personalizationPrompt?.trim() ||
-              null,
-            personalizationConfig:
-              input.personalizationConfig ?? null,
+            isPersonalizable: isPersonalizableFinal,
+            personalizationPrompt: personalizationPromptFinal,
+            personalizationConfig: personalizationConfigFinal,
             metaTitle:
               input.metaTitle?.trim() || null,
             metaDescription:
@@ -643,6 +782,8 @@ export class AdminService {
                   image.sortOrder,
                 isPrimary:
                   image.isPrimary,
+                variantId:
+                  image.variantId ?? null,
               })),
             );
         }
@@ -766,9 +907,9 @@ export class AdminService {
         input.priceCents ??
         existing.priceCents,
       compareAtPriceCents:
-        input.compareAtPriceCents ??
-        existing.compareAtPriceCents ??
-        undefined,
+        input.compareAtPriceCents !== undefined
+          ? input.compareAtPriceCents
+          : existing.compareAtPriceCents ?? undefined,
     });
 
     const updateData: Partial<
@@ -792,14 +933,14 @@ export class AdminService {
 
     if (input.description !== undefined) {
       updateData.description =
-        input.description.trim() || null;
+        input.description?.trim() || null;
     }
 
     if (
       input.shortDescription !== undefined
     ) {
       updateData.shortDescription =
-        input.shortDescription.trim() ||
+        input.shortDescription?.trim() ||
         null;
     }
 
@@ -821,7 +962,7 @@ export class AdminService {
 
     if (input.occasions !== undefined) {
       updateData.occasions =
-        input.occasions;
+        input.occasions ?? [];
     }
 
     if (input.isActive !== undefined) {
@@ -829,38 +970,51 @@ export class AdminService {
         input.isActive;
     }
 
-    if (
+    // ── Resolve final personalization state ──
+    // Determine effective isPersonalizable: input override or existing
+    const effectiveIsPersonalizable =
       input.isPersonalizable !== undefined
-    ) {
-      updateData.isPersonalizable =
-        input.isPersonalizable;
-    }
+        ? input.isPersonalizable
+        : existing.isPersonalizable;
 
-    if (
-      input.personalizationPrompt !== undefined
-    ) {
-      updateData.personalizationPrompt =
-        input.personalizationPrompt.trim() ||
-        null;
-    }
+    if (!effectiveIsPersonalizable) {
+      // Becomes or stays non-personalizable: wipe everything
+      updateData.isPersonalizable = false;
+      updateData.personalizationPrompt = null;
+      updateData.personalizationConfig = null;
+    } else {
+      // Personalizable: resolve effective prompt + config, then validate
+      const effectivePrompt =
+        input.personalizationPrompt !== undefined
+          ? input.personalizationPrompt
+          : existing.personalizationPrompt;
 
-    if (
-      input.personalizationConfig !== undefined
-    ) {
-      updateData.personalizationConfig =
-        input.personalizationConfig;
+      const effectiveConfig =
+        input.personalizationConfig !== undefined
+          ? input.personalizationConfig
+          : (existing.personalizationConfig as Record<string, unknown> | null);
+
+      const normalized = this.validatePersonalization(
+        true,
+        effectiveConfig,
+        effectivePrompt,
+      );
+
+      updateData.isPersonalizable = true;
+      updateData.personalizationPrompt = normalized.prompt;
+      updateData.personalizationConfig = normalized.config;
     }
 
     if (input.metaTitle !== undefined) {
       updateData.metaTitle =
-        input.metaTitle.trim() || null;
+        input.metaTitle?.trim() || null;
     }
 
     if (
       input.metaDescription !== undefined
     ) {
       updateData.metaDescription =
-        input.metaDescription.trim() ||
+        input.metaDescription?.trim() ||
         null;
     }
 
@@ -917,6 +1071,1083 @@ export class AdminService {
     return {
       success: true,
       id: product.id,
+    };
+  }
+
+  async getProductDetails(
+    productId: string,
+  ) {
+    const [product] = await this.db
+      .select()
+      .from(products)
+      .where(eq(products.id, productId))
+      .limit(1);
+
+    if (!product) {
+      throw new NotFoundException(
+        'Product not found',
+      );
+    }
+
+    const [
+      images,
+      variants,
+      inventoryRows,
+    ] = await Promise.all([
+      this.db
+        .select()
+        .from(productImages)
+        .where(
+          eq(
+            productImages.productId,
+            productId,
+          ),
+        )
+        .orderBy(
+          desc(productImages.isPrimary),
+          asc(productImages.sortOrder),
+          asc(productImages.createdAt),
+        ),
+
+      this.db
+        .select()
+        .from(productVariants)
+        .where(
+          eq(
+            productVariants.productId,
+            productId,
+          ),
+        )
+        .orderBy(
+          asc(productVariants.sortOrder),
+          asc(productVariants.createdAt),
+        ),
+
+      this.db
+        .select()
+        .from(inventory)
+        .where(
+          eq(
+            inventory.productId,
+            productId,
+          ),
+        ),
+    ]);
+
+    const inventoryByVariant =
+      new Map<string, typeof inventory.$inferSelect>();
+
+    let productInventory:
+      | typeof inventory.$inferSelect
+      | null = null;
+
+    for (const row of inventoryRows) {
+      if (row.variantId) {
+        inventoryByVariant.set(
+          row.variantId,
+          row,
+        );
+      } else {
+        productInventory = row;
+      }
+    }
+
+    return {
+      ...product,
+      images,
+      inventory: productInventory,
+      variants: variants.map(
+        (variant) => ({
+          ...variant,
+          inventory:
+            inventoryByVariant.get(
+              variant.id,
+            ) ?? null,
+        }),
+      ),
+    };
+  }
+
+  async addProductImage(
+    productId: string,
+    input: ProductImageInput,
+  ) {
+    const url = input.url.trim();
+    const storagePath =
+      input.storagePath.trim();
+
+    if (!url) {
+      throw new BadRequestException(
+        'Product image URL is required',
+      );
+    }
+
+    if (!storagePath) {
+      throw new BadRequestException(
+        'Product image storagePath is required',
+      );
+    }
+
+    try {
+      return await this.db.transaction(
+        async (tx) => {
+          const [product] = await tx
+            .select({
+              id: products.id,
+            })
+            .from(products)
+            .where(
+              eq(
+                products.id,
+                productId,
+              ),
+            )
+            .for('update')
+            .limit(1);
+
+          if (!product) {
+            throw new NotFoundException(
+              'Product not found',
+            );
+          }
+
+          const [existingImage] = await tx
+            .select({
+              id: productImages.id,
+            })
+            .from(productImages)
+            .where(
+              eq(
+                productImages.productId,
+                productId,
+              ),
+            )
+            .limit(1);
+
+          const [countRow] = await tx
+            .select({
+              count: sql<number>`count(*)::int`,
+            })
+            .from(productImages)
+            .where(
+              eq(
+                productImages.productId,
+                productId,
+              ),
+            );
+
+          if (countRow && countRow.count >= 20) {
+            throw new BadRequestException(
+              'A product can have a maximum of 20 images',
+            );
+          }
+
+          const shouldBePrimary =
+            input.isPrimary === true ||
+            !existingImage;
+
+          if (shouldBePrimary) {
+            await tx
+              .update(productImages)
+              .set({
+                isPrimary: false,
+              })
+              .where(
+                and(
+                  eq(
+                    productImages.productId,
+                    productId,
+                  ),
+                  eq(
+                    productImages.isPrimary,
+                    true,
+                  ),
+                ),
+              );
+          }
+
+          // Validate variant ownership if variantId is provided
+          let resolvedVariantId: string | null =
+            input.variantId ?? null;
+
+          // Validate UUID format if not null
+          if (resolvedVariantId !== null) {
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (!uuidRegex.test(resolvedVariantId)) {
+              throw new BadRequestException(
+                'Invalid variant ID format',
+              );
+            }
+          }
+
+          if (resolvedVariantId) {
+            const [variant] = await tx
+              .select({ id: productVariants.id })
+              .from(productVariants)
+              .where(
+                and(
+                  eq(
+                    productVariants.id,
+                    resolvedVariantId,
+                  ),
+                  eq(
+                    productVariants.productId,
+                    productId,
+                  ),
+                ),
+              )
+              .limit(1);
+
+            if (!variant) {
+              throw new BadRequestException(
+                'Variant does not belong to this product',
+              );
+            }
+          }
+
+          const [created] = await tx
+            .insert(productImages)
+            .values({
+              productId,
+              url,
+              storagePath,
+              altText:
+                input.altText?.trim() ||
+                null,
+              sortOrder:
+                input.sortOrder ?? 0,
+              isPrimary:
+                shouldBePrimary,
+              variantId:
+                resolvedVariantId,
+            })
+            .returning();
+
+          return created;
+        },
+      );
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException(
+          'This storage image is already linked to a product',
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  async updateProductImage(
+    productId: string,
+    imageId: string,
+    input: UpdateProductImageInput,
+  ) {
+    return this.db.transaction(
+      async (tx) => {
+        const [image] = await tx
+          .select()
+          .from(productImages)
+          .where(
+            and(
+              eq(
+                productImages.id,
+                imageId,
+              ),
+              eq(
+                productImages.productId,
+                productId,
+              ),
+            ),
+          )
+          .for('update')
+          .limit(1);
+
+        if (!image) {
+          throw new NotFoundException(
+            'Product image not found',
+          );
+        }
+
+        let finalIsPrimary =
+          input.isPrimary;
+
+        if (input.isPrimary === true) {
+          await tx
+            .update(productImages)
+            .set({
+              isPrimary: false,
+            })
+            .where(
+              and(
+                eq(
+                  productImages.productId,
+                  productId,
+                ),
+                eq(
+                  productImages.isPrimary,
+                  true,
+                ),
+              ),
+            );
+        }
+
+        if (
+          input.isPrimary === false &&
+          image.isPrimary
+        ) {
+          const [replacement] = await tx
+            .select({
+              id: productImages.id,
+            })
+            .from(productImages)
+            .where(
+              and(
+                eq(
+                  productImages.productId,
+                  productId,
+                ),
+                ne(
+                  productImages.id,
+                  imageId,
+                ),
+              ),
+            )
+            .orderBy(
+              asc(
+                productImages.sortOrder,
+              ),
+              asc(
+                productImages.createdAt,
+              ),
+            )
+            .limit(1);
+
+          if (replacement) {
+            await tx
+              .update(productImages)
+              .set({
+                isPrimary: true,
+              })
+              .where(
+                eq(
+                  productImages.id,
+                  replacement.id,
+                ),
+              );
+          } else {
+            finalIsPrimary = true;
+          }
+        }
+
+        const updateData: Partial<
+          typeof productImages.$inferInsert
+        > = {};
+
+        if (input.altText !== undefined) {
+          updateData.altText =
+            input.altText.trim() || null;
+        }
+
+        if (
+          input.sortOrder !== undefined
+        ) {
+          updateData.sortOrder =
+            input.sortOrder;
+        }
+
+        if (
+          finalIsPrimary !== undefined
+        ) {
+          updateData.isPrimary =
+            finalIsPrimary;
+        }
+
+        if (
+          input.variantId !== undefined
+        ) {
+          // Validate UUID format if not null
+          if (input.variantId !== null) {
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (!uuidRegex.test(input.variantId)) {
+              throw new BadRequestException(
+                'Invalid variant ID format',
+              );
+            }
+          }
+
+          // Validate variant ownership if provided
+          if (input.variantId) {
+            const [variant] = await tx
+              .select({ id: productVariants.id })
+              .from(productVariants)
+              .where(
+                and(
+                  eq(
+                    productVariants.id,
+                    input.variantId,
+                  ),
+                  eq(
+                    productVariants.productId,
+                    productId,
+                  ),
+                ),
+              )
+              .limit(1);
+
+            if (!variant) {
+              throw new BadRequestException(
+                'Variant does not belong to this product',
+              );
+            }
+          }
+
+          updateData.variantId =
+            input.variantId;
+        }
+
+        if (
+          Object.keys(updateData).length ===
+          0
+        ) {
+          return image;
+        }
+
+        const [updated] = await tx
+          .update(productImages)
+          .set(updateData)
+          .where(
+            and(
+              eq(
+                productImages.id,
+                imageId,
+              ),
+              eq(
+                productImages.productId,
+                productId,
+              ),
+            ),
+          )
+          .returning();
+
+        return updated;
+      },
+    );
+  }
+
+  async reorderProductImages(
+    productId: string,
+    imageOrders: ProductImageOrderInput[],
+  ) {
+    const imageIds = imageOrders.map(
+      (item) => item.imageId,
+    );
+
+    if (
+      new Set(imageIds).size !==
+      imageIds.length
+    ) {
+      throw new BadRequestException(
+        'Image ids must be unique',
+      );
+    }
+
+    return this.db.transaction(
+      async (tx) => {
+        const [product] = await tx
+          .select({
+            id: products.id,
+          })
+          .from(products)
+          .where(
+            eq(
+              products.id,
+              productId,
+            ),
+          )
+          .for('update')
+          .limit(1);
+
+        if (!product) {
+          throw new NotFoundException(
+            'Product not found',
+          );
+        }
+
+        const ownedImages = await tx
+          .select({
+            id: productImages.id,
+          })
+          .from(productImages)
+          .where(
+            and(
+              eq(
+                productImages.productId,
+                productId,
+              ),
+              inArray(
+                productImages.id,
+                imageIds,
+              ),
+            ),
+          );
+
+        if (
+          ownedImages.length !==
+          imageIds.length
+        ) {
+          throw new BadRequestException(
+            'One or more images do not belong to this product',
+          );
+        }
+
+        for (const item of imageOrders) {
+          await tx
+            .update(productImages)
+            .set({
+              sortOrder:
+                item.sortOrder,
+            })
+            .where(
+              and(
+                eq(
+                  productImages.id,
+                  item.imageId,
+                ),
+                eq(
+                  productImages.productId,
+                  productId,
+                ),
+              ),
+            );
+        }
+
+        return tx
+          .select()
+          .from(productImages)
+          .where(
+            eq(
+              productImages.productId,
+              productId,
+            ),
+          )
+          .orderBy(
+            desc(
+              productImages.isPrimary,
+            ),
+            asc(
+              productImages.sortOrder,
+            ),
+            asc(
+              productImages.createdAt,
+            ),
+          );
+      },
+    );
+  }
+
+  async deleteProductImage(
+    productId: string,
+    imageId: string,
+  ) {
+    const deleted =
+      await this.db.transaction(
+        async (tx) => {
+          const [image] = await tx
+            .select()
+            .from(productImages)
+            .where(
+              and(
+                eq(
+                  productImages.id,
+                  imageId,
+                ),
+                eq(
+                  productImages.productId,
+                  productId,
+                ),
+              ),
+            )
+            .for('update')
+            .limit(1);
+
+          if (!image) {
+            throw new NotFoundException(
+              'Product image not found',
+            );
+          }
+
+          await tx
+            .delete(productImages)
+            .where(
+              and(
+                eq(
+                  productImages.id,
+                  imageId,
+                ),
+                eq(
+                  productImages.productId,
+                  productId,
+                ),
+              ),
+            );
+
+          if (image.isPrimary) {
+            const [replacement] = await tx
+              .select({
+                id: productImages.id,
+              })
+              .from(productImages)
+              .where(
+                eq(
+                  productImages.productId,
+                  productId,
+                ),
+              )
+              .orderBy(
+                asc(
+                  productImages.sortOrder,
+                ),
+                asc(
+                  productImages.createdAt,
+                ),
+              )
+              .limit(1);
+
+            if (replacement) {
+              await tx
+                .update(productImages)
+                .set({
+                  isPrimary: true,
+                })
+                .where(
+                  eq(
+                    productImages.id,
+                    replacement.id,
+                  ),
+                );
+            }
+          }
+
+          return {
+            id: image.id,
+            storagePath:
+              image.storagePath,
+          };
+        },
+      );
+
+    let storageDeleted =
+      !deleted.storagePath;
+
+    if (deleted.storagePath) {
+      try {
+        await this.mediaService.delete(
+          deleted.storagePath,
+        );
+
+        storageDeleted = true;
+      } catch (error) {
+        if (
+          error instanceof
+          NotFoundException
+        ) {
+          storageDeleted = true;
+        } else {
+          const message =
+            error instanceof Error
+              ? error.message
+              : String(error);
+
+          this.logger.error(
+            `Product image ${deleted.id} was removed from PostgreSQL but Storage cleanup failed: ${message}`,
+          );
+        }
+      }
+    }
+
+    return {
+      success: true,
+      id: deleted.id,
+      storageDeleted,
+    };
+  }
+
+  async createProductVariant(
+    productId: string,
+    input: ProductVariantInput,
+  ) {
+    this.validateVariant(input);
+
+    if (input.inventory) {
+      this.validateInventory(
+        input.inventory,
+      );
+    }
+
+    try {
+      return await this.db.transaction(
+        async (tx) => {
+          const [product] = await tx
+            .select({
+              id: products.id,
+            })
+            .from(products)
+            .where(
+              eq(
+                products.id,
+                productId,
+              ),
+            )
+            .for('update')
+            .limit(1);
+
+          if (!product) {
+            throw new NotFoundException(
+              'Product not found',
+            );
+          }
+
+          const [productInventory] =
+            await tx
+              .select()
+              .from(inventory)
+              .where(
+                and(
+                  eq(
+                    inventory.productId,
+                    productId,
+                  ),
+                  isNull(
+                    inventory.variantId,
+                  ),
+                ),
+              )
+              .for('update')
+              .limit(1);
+
+          if (productInventory) {
+            if (
+              productInventory.quantity > 0 ||
+              productInventory.reserved > 0
+            ) {
+              throw new ConflictException(
+                'Product-level inventory must be empty before variants can be added',
+              );
+            }
+
+            await tx
+              .delete(inventory)
+              .where(
+                eq(
+                  inventory.id,
+                  productInventory.id,
+                ),
+              );
+          }
+
+          const [variant] = await tx
+            .insert(productVariants)
+            .values({
+              productId,
+              name: input.name.trim(),
+              sku:
+                input.sku?.trim() ||
+                null,
+              colorName:
+                input.colorName?.trim() ||
+                null,
+              colorHex:
+                input.colorHex?.trim() ||
+                null,
+              priceCents:
+                input.priceCents ?? null,
+              options:
+                input.options ?? null,
+              sortOrder:
+                input.sortOrder ?? 0,
+              isActive:
+                input.isActive ?? true,
+            })
+            .returning();
+
+          let variantInventory:
+            | typeof inventory.$inferSelect
+            | null = null;
+
+          if (input.inventory) {
+            [variantInventory] = await tx
+              .insert(inventory)
+              .values({
+                productId,
+                variantId:
+                  variant.id,
+                quantity:
+                  input.inventory
+                    .quantity,
+                lowStockThreshold:
+                  input.inventory
+                    .lowStockThreshold ?? 5,
+                trackInventory:
+                  input.inventory
+                    .trackInventory ?? true,
+              })
+              .returning();
+          }
+
+          return {
+            ...variant,
+            inventory:
+              variantInventory,
+          };
+        },
+      );
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException(
+          'Variant SKU already exists',
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  async updateProductVariant(
+    productId: string,
+    variantId: string,
+    input: UpdateProductVariantInput,
+  ) {
+    try {
+      return await this.db.transaction(
+        async (tx) => {
+          const [product] = await tx
+            .select({
+              id: products.id,
+              isActive:
+                products.isActive,
+            })
+            .from(products)
+            .where(
+              eq(
+                products.id,
+                productId,
+              ),
+            )
+            .for('update')
+            .limit(1);
+
+          if (!product) {
+            throw new NotFoundException(
+              'Product not found',
+            );
+          }
+
+          const [variant] = await tx
+            .select()
+            .from(productVariants)
+            .where(
+              and(
+                eq(
+                  productVariants.id,
+                  variantId,
+                ),
+                eq(
+                  productVariants.productId,
+                  productId,
+                ),
+              ),
+            )
+            .for('update')
+            .limit(1);
+
+          if (!variant) {
+            throw new NotFoundException(
+              'Product variant not found',
+            );
+          }
+
+          this.validateVariant({
+            name:
+              input.name ??
+              variant.name,
+            priceCents:
+              input.priceCents,
+          });
+
+          if (
+            input.isActive === false &&
+            variant.isActive &&
+            product.isActive
+          ) {
+            const [otherActive] = await tx
+              .select({
+                id: productVariants.id,
+              })
+              .from(productVariants)
+              .where(
+                and(
+                  eq(
+                    productVariants.productId,
+                    productId,
+                  ),
+                  eq(
+                    productVariants.isActive,
+                    true,
+                  ),
+                  ne(
+                    productVariants.id,
+                    variantId,
+                  ),
+                ),
+              )
+              .limit(1);
+
+            if (!otherActive) {
+              throw new ConflictException(
+                'Cannot deactivate the last active variant while the product is active',
+              );
+            }
+          }
+
+          const updateData: Partial<
+            typeof productVariants.$inferInsert
+          > = {
+            updatedAt:
+              new Date(),
+          };
+
+          if (input.name !== undefined) {
+            updateData.name =
+              input.name.trim();
+          }
+
+          if (input.sku !== undefined) {
+            updateData.sku =
+              input.sku.trim() ||
+              null;
+          }
+
+          if (
+            input.colorName !==
+            undefined
+          ) {
+            updateData.colorName =
+              input.colorName.trim() ||
+              null;
+          }
+
+          if (
+            input.colorHex !==
+            undefined
+          ) {
+            updateData.colorHex =
+              input.colorHex.trim() ||
+              null;
+          }
+
+          if (
+            input.priceCents !==
+            undefined
+          ) {
+            updateData.priceCents =
+              input.priceCents;
+          }
+
+          if (
+            input.options !==
+            undefined
+          ) {
+            updateData.options =
+              input.options;
+          }
+
+          if (
+            input.sortOrder !==
+            undefined
+          ) {
+            updateData.sortOrder =
+              input.sortOrder;
+          }
+
+          if (
+            input.isActive !==
+            undefined
+          ) {
+            updateData.isActive =
+              input.isActive;
+          }
+
+          const [updated] = await tx
+            .update(productVariants)
+            .set(updateData)
+            .where(
+              and(
+                eq(
+                  productVariants.id,
+                  variantId,
+                ),
+                eq(
+                  productVariants.productId,
+                  productId,
+                ),
+              ),
+            )
+            .returning();
+
+          const [variantInventory] =
+            await tx
+              .select()
+              .from(inventory)
+              .where(
+                and(
+                  eq(
+                    inventory.productId,
+                    productId,
+                  ),
+                  eq(
+                    inventory.variantId,
+                    variantId,
+                  ),
+                ),
+              )
+              .limit(1);
+
+          return {
+            ...updated,
+            inventory:
+              variantInventory ?? null,
+          };
+        },
+      );
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException(
+          'Variant SKU already exists',
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  async deleteProductVariant(
+    productId: string,
+    variantId: string,
+  ) {
+    const variant =
+      await this.updateProductVariant(
+        productId,
+        variantId,
+        {
+          isActive: false,
+        },
+      );
+
+    return {
+      success: true,
+      id: variant.id,
+      isActive:
+        variant.isActive,
     };
   }
 
@@ -1044,6 +2275,502 @@ export class AdminService {
         return created;
       },
     );
+  }
+
+  // ──── CATEGORY HERO IMAGES ────
+
+  async getCategoryWithHeroImages(categoryId: string) {
+    const [category] = await this.db
+      .select()
+      .from(categories)
+      .where(eq(categories.id, categoryId));
+
+    if (!category) {
+      throw new NotFoundException('Category not found');
+    }
+
+    const heroImages = await this.db
+      .select()
+      .from(categoryImages)
+      .where(eq(categoryImages.categoryId, categoryId))
+      .orderBy(asc(categoryImages.sortOrder), asc(categoryImages.createdAt));
+
+    return { ...category, heroImages };
+  }
+
+  async addCategoryHeroImage(
+    categoryId: string,
+    input: { url: string; storagePath: string; altText?: string; sortOrder?: number },
+  ) {
+    // Verify category exists and is a subcategory
+    const [category] = await this.db
+      .select({ id: categories.id, parentId: categories.parentId })
+      .from(categories)
+      .where(eq(categories.id, categoryId));
+
+    if (!category) {
+      throw new NotFoundException('Category not found');
+    }
+
+    if (!category.parentId) {
+      throw new BadRequestException('Hero images are only allowed for subcategories');
+    }
+
+    // Check max 10 images
+    const [countResult] = await this.db
+      .select({ count: count() })
+      .from(categoryImages)
+      .where(eq(categoryImages.categoryId, categoryId));
+
+    if (countResult && countResult.count >= 10) {
+      throw new BadRequestException('Maximum 10 hero images per category');
+    }
+
+    const sortOrder = input.sortOrder ?? 0;
+
+    const [created] = await this.db
+      .insert(categoryImages)
+      .values({
+        categoryId,
+        url: input.url,
+        storagePath: input.storagePath,
+        altText: input.altText,
+        sortOrder,
+      })
+      .returning();
+
+    return created;
+  }
+
+  async updateCategoryHeroImage(
+    categoryId: string,
+    imageId: string,
+    input: { altText?: string; sortOrder?: number },
+  ) {
+    const [image] = await this.db
+      .select()
+      .from(categoryImages)
+      .where(and(eq(categoryImages.id, imageId), eq(categoryImages.categoryId, categoryId)));
+
+    if (!image) {
+      throw new NotFoundException('Category hero image not found');
+    }
+
+    const updateData: Record<string, unknown> = {};
+    if (input.altText !== undefined) updateData.altText = input.altText;
+    if (input.sortOrder !== undefined) updateData.sortOrder = input.sortOrder;
+
+    if (Object.keys(updateData).length === 0) {
+      return image;
+    }
+
+    const [updated] = await this.db
+      .update(categoryImages)
+      .set(updateData)
+      .where(eq(categoryImages.id, imageId))
+      .returning();
+
+    return updated;
+  }
+
+  async reorderCategoryHeroImages(
+    categoryId: string,
+    imageOrders: { imageId: string; sortOrder: number }[],
+  ) {
+    // Verify all images belong to this category
+    const existingImages = await this.db
+      .select({ id: categoryImages.id })
+      .from(categoryImages)
+      .where(eq(categoryImages.categoryId, categoryId));
+
+    const validIds = new Set(existingImages.map((i) => i.id));
+
+    for (const order of imageOrders) {
+      if (!validIds.has(order.imageId)) {
+        throw new BadRequestException(
+          `Image ${order.imageId} does not belong to category ${categoryId}`,
+        );
+      }
+    }
+
+    // Update each image's sortOrder
+    const updates = imageOrders.map((order) =>
+      this.db
+        .update(categoryImages)
+        .set({ sortOrder: order.sortOrder })
+        .where(eq(categoryImages.id, order.imageId)),
+    );
+
+    await Promise.all(updates);
+
+    // Return updated images
+    return this.db
+      .select()
+      .from(categoryImages)
+      .where(eq(categoryImages.categoryId, categoryId))
+      .orderBy(asc(categoryImages.sortOrder), asc(categoryImages.createdAt));
+  }
+
+  async deleteCategoryHeroImage(categoryId: string, imageId: string) {
+    const [image] = await this.db
+      .select()
+      .from(categoryImages)
+      .where(and(eq(categoryImages.id, imageId), eq(categoryImages.categoryId, categoryId)));
+
+    if (!image) {
+      throw new NotFoundException('Category hero image not found');
+    }
+
+    // Delete from DB
+    await this.db.delete(categoryImages).where(eq(categoryImages.id, imageId));
+
+    // Clean up Supabase Storage (best-effort, log but don't throw on failure)
+    if (image.storagePath) {
+      try {
+        await this.mediaService.delete(image.storagePath);
+      } catch (error) {
+        // Log but don't throw — DB record is already deleted
+        this.logger.warn(
+          `Failed to delete category hero image from storage: ${image.storagePath}`,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+
+    return { message: 'Category hero image deleted successfully' };
+  }
+
+  async getAllPromotions(
+    page = 1,
+    limit = 20,
+  ) {
+    const safePage = this.normalizePage(page);
+    const safeLimit = this.normalizeLimit(limit);
+
+    const [countResult] = await this.db
+      .select({
+        count: sql<number>`count(*)::int`,
+      })
+      .from(promotions);
+
+    const data = await this.db
+      .select()
+      .from(promotions)
+      .orderBy(desc(promotions.createdAt))
+      .limit(safeLimit)
+      .offset((safePage - 1) * safeLimit);
+
+    const total = countResult?.count ?? 0;
+
+    return {
+      data,
+      meta: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages: Math.ceil(
+          total / safeLimit,
+        ),
+      },
+    };
+  }
+
+  async createPromotion(
+    input: CreateAdminPromotionInput,
+  ) {
+    const normalized =
+      this.normalizePromotionInput(input);
+
+    try {
+      const [created] = await this.db
+        .insert(promotions)
+        .values({
+          code: normalized.code,
+          description:
+            normalized.description,
+          discountType:
+            normalized.discountType,
+          discountValue:
+            normalized.discountValue,
+          minSubtotalCents:
+            normalized.minSubtotalCents,
+          maxDiscountCents:
+            normalized.maxDiscountCents,
+          startsAt:
+            normalized.startsAt,
+          endsAt:
+            normalized.endsAt,
+          isActive:
+            normalized.isActive,
+          usageLimit:
+            normalized.usageLimit,
+          usageCount: 0,
+        })
+        .returning();
+
+      return created;
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException(
+          'Promotion code already exists',
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  async updatePromotion(
+    promotionId: string,
+    input: UpdateAdminPromotionInput,
+  ) {
+    return this.db.transaction(
+      async (tx) => {
+        const [existing] = await tx
+          .select()
+          .from(promotions)
+          .where(
+            eq(
+              promotions.id,
+              promotionId,
+            ),
+          )
+          .for('update')
+          .limit(1);
+
+        if (!existing) {
+          throw new NotFoundException(
+            'Promotion not found',
+          );
+        }
+
+        if (
+          Object.keys(input).length === 0
+        ) {
+          return existing;
+        }
+
+        const code =
+          input.code !== undefined
+            ? this.normalizePromotionCode(
+                input.code,
+              )
+            : existing.code;
+
+        if (
+          input.code !== undefined &&
+          code !== existing.code &&
+          existing.usageCount > 0
+        ) {
+          throw new ConflictException(
+            'Promotion code cannot be changed after the promotion has been used',
+          );
+        }
+
+        const discountType =
+          input.discountType ??
+          existing.discountType;
+
+        const discountValue =
+          input.discountValue ??
+          existing.discountValue;
+
+        const minSubtotalCents =
+          input.minSubtotalCents ??
+          existing.minSubtotalCents;
+
+        const maxDiscountCents =
+          input.maxDiscountCents !==
+          undefined
+            ? input.maxDiscountCents
+            : existing.maxDiscountCents;
+
+        const startsAt =
+          input.startsAt !== undefined
+            ? this.parseOptionalDate(
+                input.startsAt,
+                'startsAt',
+              )
+            : existing.startsAt;
+
+        const endsAt =
+          input.endsAt !== undefined
+            ? this.parseOptionalDate(
+                input.endsAt,
+                'endsAt',
+              )
+            : existing.endsAt;
+
+        const usageLimit =
+          input.usageLimit !== undefined
+            ? input.usageLimit
+            : existing.usageLimit;
+
+        this.validatePromotionRules({
+          discountType,
+          discountValue,
+          minSubtotalCents,
+          maxDiscountCents,
+          startsAt,
+          endsAt,
+          usageLimit,
+          usageCount:
+            existing.usageCount,
+        });
+
+        const updateData: Partial<
+          typeof promotions.$inferInsert
+        > = {
+          updatedAt: new Date(),
+        };
+
+        if (input.code !== undefined) {
+          updateData.code = code;
+        }
+
+        if (
+          input.description !== undefined
+        ) {
+          updateData.description =
+            input.description.trim() ||
+            null;
+        }
+
+        if (
+          input.discountType !== undefined
+        ) {
+          updateData.discountType =
+            discountType;
+        }
+
+        if (
+          input.discountValue !== undefined
+        ) {
+          updateData.discountValue =
+            discountValue;
+        }
+
+        if (
+          input.minSubtotalCents !==
+          undefined
+        ) {
+          updateData.minSubtotalCents =
+            minSubtotalCents;
+        }
+
+        if (
+          input.maxDiscountCents !==
+          undefined
+        ) {
+          updateData.maxDiscountCents =
+            maxDiscountCents;
+        }
+
+        if (input.startsAt !== undefined) {
+          updateData.startsAt =
+            startsAt;
+        }
+
+        if (input.endsAt !== undefined) {
+          updateData.endsAt =
+            endsAt;
+        }
+
+        if (
+          input.isActive !== undefined
+        ) {
+          updateData.isActive =
+            input.isActive;
+        }
+
+        if (
+          input.usageLimit !== undefined
+        ) {
+          updateData.usageLimit =
+            usageLimit;
+        }
+
+        try {
+          const [updated] = await tx
+            .update(promotions)
+            .set(updateData)
+            .where(
+              eq(
+                promotions.id,
+                promotionId,
+              ),
+            )
+            .returning();
+
+          return updated;
+        } catch (error) {
+          if (
+            this.isUniqueViolation(error)
+          ) {
+            throw new ConflictException(
+              'Promotion code already exists',
+            );
+          }
+
+          throw error;
+        }
+      },
+    );
+  }
+
+  async deletePromotion(
+    promotionId: string,
+  ) {
+    const [existing] = await this.db
+      .select({
+        id: promotions.id,
+        isActive: promotions.isActive,
+      })
+      .from(promotions)
+      .where(
+        eq(
+          promotions.id,
+          promotionId,
+        ),
+      )
+      .limit(1);
+
+    if (!existing) {
+      throw new NotFoundException(
+        'Promotion not found',
+      );
+    }
+
+    if (!existing.isActive) {
+      return {
+        success: true,
+        id: existing.id,
+        alreadyInactive: true,
+      };
+    }
+
+    const [updated] = await this.db
+      .update(promotions)
+      .set({
+        isActive: false,
+        updatedAt: new Date(),
+      })
+      .where(
+        eq(
+          promotions.id,
+          promotionId,
+        ),
+      )
+      .returning({
+        id: promotions.id,
+        isActive:
+          promotions.isActive,
+      });
+
+    return {
+      success: true,
+      ...updated,
+    };
   }
 
   async getAllUsers(
@@ -1256,6 +2983,205 @@ export class AdminService {
     }
   }
 
+  private normalizePromotionInput(
+    input: CreateAdminPromotionInput,
+  ) {
+    const code =
+      this.normalizePromotionCode(
+        input.code,
+      );
+
+    const startsAt =
+      this.parseOptionalDate(
+        input.startsAt,
+        'startsAt',
+      );
+
+    const endsAt =
+      this.parseOptionalDate(
+        input.endsAt,
+        'endsAt',
+      );
+
+    const normalized = {
+      code,
+      description:
+        input.description?.trim() ||
+        null,
+      discountType:
+        input.discountType,
+      discountValue:
+        input.discountValue,
+      minSubtotalCents:
+        input.minSubtotalCents ?? 0,
+      maxDiscountCents:
+        input.maxDiscountCents ?? null,
+      startsAt,
+      endsAt,
+      isActive:
+        input.isActive ?? true,
+      usageLimit:
+        input.usageLimit ?? null,
+    };
+
+    this.validatePromotionRules({
+      discountType:
+        normalized.discountType,
+      discountValue:
+        normalized.discountValue,
+      minSubtotalCents:
+        normalized.minSubtotalCents,
+      maxDiscountCents:
+        normalized.maxDiscountCents,
+      startsAt:
+        normalized.startsAt,
+      endsAt:
+        normalized.endsAt,
+      usageLimit:
+        normalized.usageLimit,
+      usageCount: 0,
+    });
+
+    return normalized;
+  }
+
+  private normalizePromotionCode(
+    rawCode: string,
+  ): string {
+    const code = rawCode
+      .trim()
+      .toUpperCase();
+
+    if (!code) {
+      throw new BadRequestException(
+        'Promotion code is required',
+      );
+    }
+
+    return code;
+  }
+
+  private parseOptionalDate(
+    value: string | null | undefined,
+    fieldName: string,
+  ): Date | null {
+    if (
+      value === undefined ||
+      value === null
+    ) {
+      return null;
+    }
+
+    const date = new Date(value);
+
+    if (
+      Number.isNaN(date.getTime())
+    ) {
+      throw new BadRequestException(
+        `${fieldName} must be a valid date`,
+      );
+    }
+
+    return date;
+  }
+
+  private validatePromotionRules(
+    input: {
+      discountType:
+        | 'percentage'
+        | 'fixed';
+      discountValue: number;
+      minSubtotalCents: number;
+      maxDiscountCents:
+        | number
+        | null;
+      startsAt: Date | null;
+      endsAt: Date | null;
+      usageLimit: number | null;
+      usageCount: number;
+    },
+  ): void {
+    if (
+      !Number.isInteger(
+        input.discountValue,
+      ) ||
+      input.discountValue <= 0
+    ) {
+      throw new BadRequestException(
+        'Promotion discount value must be a positive integer',
+      );
+    }
+
+    if (
+      input.discountType ===
+        'percentage' &&
+      input.discountValue > 100
+    ) {
+      throw new BadRequestException(
+        'Percentage promotion cannot exceed 100%',
+      );
+    }
+
+    if (
+      !Number.isInteger(
+        input.minSubtotalCents,
+      ) ||
+      input.minSubtotalCents < 0
+    ) {
+      throw new BadRequestException(
+        'Minimum subtotal must be a non-negative integer',
+      );
+    }
+
+    if (
+      input.maxDiscountCents !== null &&
+      (
+        !Number.isInteger(
+          input.maxDiscountCents,
+        ) ||
+        input.maxDiscountCents < 0
+      )
+    ) {
+      throw new BadRequestException(
+        'Maximum discount must be a non-negative integer',
+      );
+    }
+
+    if (
+      input.startsAt &&
+      input.endsAt &&
+      input.endsAt <= input.startsAt
+    ) {
+      throw new BadRequestException(
+        'Promotion end date must be after start date',
+      );
+    }
+
+    if (
+      input.usageLimit !== null &&
+      (
+        !Number.isInteger(
+          input.usageLimit,
+        ) ||
+        input.usageLimit <= 0
+      )
+    ) {
+      throw new BadRequestException(
+        'Promotion usage limit must be a positive integer',
+      );
+    }
+
+    if (
+      input.usageLimit !== null &&
+      input.usageLimit <
+        input.usageCount
+    ) {
+      throw new ConflictException(
+        `Usage limit cannot be lower than current usage count (${input.usageCount})`,
+      );
+    }
+  }
+
   private isUniqueViolation(
     error: unknown,
   ): boolean {
@@ -1411,6 +3337,8 @@ export class AdminService {
             image.sortOrder ?? index,
           isPrimary:
             index === primaryIndex,
+          variantId:
+            image.variantId ?? null,
         };
       },
     );
@@ -1419,7 +3347,7 @@ export class AdminService {
   private validateProductPrices(
     input: {
       priceCents: number;
-      compareAtPriceCents?: number;
+      compareAtPriceCents?: number | null;
     },
   ): void {
     if (
@@ -1434,8 +3362,8 @@ export class AdminService {
     }
 
     if (
-      input.compareAtPriceCents !==
-        undefined &&
+      input.compareAtPriceCents !=
+        null &&
       (
         !Number.isInteger(
           input.compareAtPriceCents,
@@ -1532,4 +3460,306 @@ export class AdminService {
       status as OrderStatus,
     );
   }
+
+  // ──── PERSONALIZATION VALIDATION ────
+
+  private validatePersonalization(
+    isPersonalizable: boolean | undefined,
+    personalizationConfig: Record<string, unknown> | null | undefined,
+    personalizationPrompt: string | null | undefined,
+  ): { config: Record<string, unknown> | null; prompt: string | null } {
+    const enabled = isPersonalizable === true;
+
+    if (!enabled) {
+      return { config: null, prompt: null };
+    }
+
+    if (!personalizationConfig || typeof personalizationConfig !== 'object') {
+      throw new BadRequestException(
+        'Personalization config is required for personalizable products',
+      );
+    }
+
+    // ── version (must be exactly 1) ──
+    const version = personalizationConfig.version;
+    if (typeof version !== 'number' || version !== 1 || !Number.isInteger(version)) {
+      throw new BadRequestException(
+        'Personalization config version must be 1',
+      );
+    }
+
+    const mode = personalizationConfig.mode;
+
+    if (mode === 'FREE') {
+      return {
+        config: this.buildFreeConfig(personalizationConfig),
+        prompt: personalizationPrompt?.trim() || null,
+      };
+    }
+
+    if (mode === 'OPTIONS') {
+      return {
+        config: this.buildOptionsConfig(personalizationConfig),
+        prompt: personalizationPrompt?.trim() || null,
+      };
+    }
+
+    throw new BadRequestException(
+      'Unsupported personalization mode',
+    );
+  }
+
+  // ── FREE: validate + build canonical form ──
+
+  private buildFreeConfig(raw: Record<string, unknown>): Record<string, unknown> {
+    const label = raw.label;
+    if (typeof label !== 'string' || !label.trim()) {
+      throw new BadRequestException(
+        'FREE personalization label is required',
+      );
+    }
+
+    const required = raw.required;
+    if (typeof required !== 'boolean') {
+      throw new BadRequestException(
+        'FREE personalization required field must be a boolean',
+      );
+    }
+
+    const maxLength = raw.maxLength;
+    if (
+      maxLength !== undefined &&
+      maxLength !== null &&
+      (typeof maxLength !== 'number' ||
+        !Number.isInteger(maxLength) ||
+        maxLength < 1 ||
+        maxLength > 500)
+    ) {
+      throw new BadRequestException(
+        'FREE personalization maxLength must be an integer between 1 and 500',
+      );
+    }
+
+    const placeholder = raw.placeholder;
+    if (
+      placeholder !== undefined &&
+      placeholder !== null &&
+      (typeof placeholder !== 'string' ||
+        placeholder.length > 200)
+    ) {
+      throw new BadRequestException(
+        'FREE personalization placeholder must be a string of 200 characters or fewer',
+      );
+    }
+
+    // ── canonical reconstruction ──
+    const config: Record<string, unknown> = {
+      version: 1,
+      mode: 'FREE',
+      label: (label as string).trim(),
+      required,
+      maxLength: typeof maxLength === 'number' ? maxLength : 50,
+    };
+
+    if (typeof placeholder === 'string' && placeholder.trim()) {
+      config.placeholder = placeholder.trim();
+    }
+
+    return config;
+  }
+
+  // ── OPTIONS: validate + build canonical form ──
+
+  private buildOptionsConfig(raw: Record<string, unknown>): Record<string, unknown> {
+    const fields = raw.fields;
+
+    if (!Array.isArray(fields) || fields.length === 0) {
+      throw new BadRequestException(
+        'OPTIONS personalization requires at least one field',
+      );
+    }
+
+    if (fields.length > 10) {
+      throw new BadRequestException(
+        'OPTIONS personalization supports a maximum of 10 fields',
+      );
+    }
+
+    const ids = new Set<string>();
+    const canonicalFields: Record<string, unknown>[] = [];
+
+    for (const rawField of fields) {
+      if (!rawField || typeof rawField !== 'object') {
+        throw new BadRequestException(
+          'Each personalization field must be an object',
+        );
+      }
+
+      const field = rawField as Record<string, unknown>;
+
+      // id
+      const id = field.id;
+      if (typeof id !== 'string' || !id.trim()) {
+        throw new BadRequestException(
+          'Personalization field id is required',
+        );
+      }
+      if (id.length > 64) {
+        throw new BadRequestException(
+          'Personalization field id must be 64 characters or fewer',
+        );
+      }
+      if (!/^[a-z0-9_-]+$/.test(id)) {
+        throw new BadRequestException(
+          'Personalization field id must contain only lowercase letters, numbers, hyphens and underscores',
+        );
+      }
+      if (ids.has(id)) {
+        throw new BadRequestException(
+          'Personalization field ids must be unique',
+        );
+      }
+      ids.add(id);
+
+      // label
+      const label = field.label;
+      if (typeof label !== 'string' || !label.trim()) {
+        throw new BadRequestException(
+          'Personalization field label is required',
+        );
+      }
+      if (label.length > 120) {
+        throw new BadRequestException(
+          'Personalization field label must be 120 characters or fewer',
+        );
+      }
+
+      // type
+      const type = field.type;
+      if (type !== 'TEXT' && type !== 'SELECT') {
+        throw new BadRequestException(
+          'Personalization field type must be TEXT or SELECT',
+        );
+      }
+
+      // required
+      const required = field.required;
+      if (typeof required !== 'boolean') {
+        throw new BadRequestException(
+          'Personalization field required must be a boolean',
+        );
+      }
+
+      if (type === 'TEXT') {
+        // TEXT must NOT contain options
+        if (field.options !== undefined && field.options !== null) {
+          throw new BadRequestException(
+            'TEXT personalization field must not contain options',
+          );
+        }
+
+        const placeholder = field.placeholder;
+        if (
+          placeholder !== undefined &&
+          placeholder !== null &&
+          (typeof placeholder !== 'string' ||
+            placeholder.length > 200)
+        ) {
+          throw new BadRequestException(
+            'TEXT field placeholder must be a string of 200 characters or fewer',
+          );
+        }
+
+        const maxLength = field.maxLength;
+        if (
+          maxLength !== undefined &&
+          maxLength !== null &&
+          (typeof maxLength !== 'number' ||
+            !Number.isInteger(maxLength) ||
+            maxLength < 1 ||
+            maxLength > 500)
+        ) {
+          throw new BadRequestException(
+            'TEXT field maxLength must be an integer between 1 and 500',
+          );
+        }
+
+        // canonical TEXT field
+        const f: Record<string, unknown> = {
+          id,
+          label: (label as string).trim(),
+          type: 'TEXT',
+          required,
+        };
+        if (typeof placeholder === 'string' && placeholder.trim()) {
+          f.placeholder = placeholder.trim();
+        }
+        f.maxLength =
+          typeof maxLength === 'number' ? maxLength : 50;
+
+        canonicalFields.push(f);
+      }
+
+      if (type === 'SELECT') {
+        // SELECT must NOT contain maxLength
+        if (field.maxLength !== undefined && field.maxLength !== null) {
+          throw new BadRequestException(
+            'SELECT personalization field must not contain maxLength',
+          );
+        }
+
+        const options = field.options;
+        if (!Array.isArray(options) || options.length === 0) {
+          throw new BadRequestException(
+            'SELECT personalization field requires options',
+          );
+        }
+        if (options.length > 30) {
+          throw new BadRequestException(
+            'SELECT field supports a maximum of 30 options',
+          );
+        }
+
+        const optionSet = new Set<string>();
+        const canonicalOptions: string[] = [];
+
+        for (const opt of options) {
+          if (typeof opt !== 'string' || !opt.trim()) {
+            throw new BadRequestException(
+              'SELECT field options must be non-empty strings',
+            );
+          }
+          const trimmed = opt.trim();
+          if (trimmed.length > 120) {
+            throw new BadRequestException(
+              'SELECT field option must be 120 characters or fewer',
+            );
+          }
+          if (optionSet.has(trimmed.toLowerCase())) {
+            throw new BadRequestException(
+              'SELECT field options must be unique',
+            );
+          }
+          optionSet.add(trimmed.toLowerCase());
+          canonicalOptions.push(trimmed);
+        }
+
+        // canonical SELECT field
+        canonicalFields.push({
+          id,
+          label: (label as string).trim(),
+          type: 'SELECT',
+          required,
+          options: canonicalOptions,
+        });
+      }
+    }
+
+    return {
+      version: 1,
+      mode: 'OPTIONS',
+      fields: canonicalFields,
+    };
+  }
 }
+

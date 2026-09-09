@@ -96,6 +96,11 @@ export const productImages = pgTable(
     sortOrder: integer('sort_order').notNull().default(0),
     isPrimary: boolean('is_primary').notNull().default(false),
 
+    variantId: uuid('variant_id').references(
+      () => productVariants.id,
+      { onDelete: 'set null' },
+    ),
+
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -107,6 +112,8 @@ export const productImages = pgTable(
       table.productId,
       table.sortOrder,
     ),
+
+    index('product_images_variant_idx').on(table.variantId),
 
     uniqueIndex('product_images_storage_path_unique_idx')
       .on(table.storagePath)

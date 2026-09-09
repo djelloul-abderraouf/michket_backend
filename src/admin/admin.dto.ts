@@ -1,4 +1,5 @@
 import { Type } from 'class-transformer';
+
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -6,6 +7,7 @@ import {
   IsBoolean,
   IsIn,
   IsInt,
+  IsISO8601,
   IsObject,
   IsOptional,
   IsString,
@@ -17,6 +19,7 @@ import {
   MinLength,
   ValidateNested,
 } from 'class-validator';
+
 import {
   OmitType,
   PartialType,
@@ -44,6 +47,11 @@ const USER_ROLES = [
   'customer',
   'admin',
   'super_admin',
+] as const;
+
+const PROMOTION_DISCOUNT_TYPES = [
+  'percentage',
+  'fixed',
 ] as const;
 
 export class AdminPaginationDto {
@@ -119,6 +127,9 @@ export class AdminProductImageDto {
   @IsOptional()
   @IsBoolean()
   isPrimary?: boolean;
+
+  @IsOptional()
+  variantId?: string | null;
 }
 
 export class CreateAdminProductImageDto extends AdminProductImageDto {}
@@ -301,13 +312,84 @@ export class CreateAdminProductDto {
   inventory?: AdminInventoryDto;
 }
 
-export class UpdateAdminProductDto extends PartialType(
-  OmitType(CreateAdminProductDto, [
-    'images',
-    'variants',
-    'inventory',
-  ] as const),
-) {}
+export class UpdateAdminProductDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(220)
+  @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, {
+    message:
+      'slug must contain only lowercase letters, numbers and hyphens',
+  })
+  slug?: string;
+
+  @IsOptional()
+  @IsUUID()
+  categoryId?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  shortDescription?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  priceCents?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  compareAtPriceCents?: number | null;
+
+  @IsOptional()
+  @IsIn(PRODUCT_BADGES)
+  badge?: (typeof PRODUCT_BADGES)[number] | null;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(30)
+  @IsString({ each: true })
+  occasions?: string[] | null;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isPersonalizable?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  personalizationPrompt?: string | null;
+
+  @IsOptional()
+  @IsObject()
+  personalizationConfig?: Record<string, unknown> | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  metaTitle?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  metaDescription?: string | null;
+}
 
 export class UpdateAdminInventoryDto extends AdminInventoryDto {
   @IsOptional()
@@ -334,6 +416,21 @@ export class CreateAdminCategoryDto {
   description?: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  pageTitle?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  productsTitle?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  filterLabel?: string;
+
+  @IsOptional()
   @IsUrl({
     protocols: ['https'],
     require_protocol: true,
@@ -342,12 +439,17 @@ export class CreateAdminCategoryDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
+  imageStoragePath?: string;
+
+  @IsOptional()
+  @IsString()
   @MaxLength(300)
   href?: string;
 
   @IsOptional()
   @IsUUID()
-  parentId?: string;
+  parentId?: string | null;
 
   @IsOptional()
   @IsBoolean()
@@ -372,6 +474,116 @@ export class CreateAdminCategoryDto {
 
 export class UpdateAdminCategoryDto extends PartialType(
   CreateAdminCategoryDto,
+) {}
+
+// ── Category Hero Images ──
+
+export class CreateCategoryHeroImageDto {
+  @IsUrl({
+    protocols: ['https'],
+    require_protocol: true,
+  })
+  url!: string;
+
+  @IsString()
+  @MinLength(1)
+  @MaxLength(500)
+  storagePath!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  altText?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+}
+
+export class UpdateCategoryHeroImageDto extends PartialType(
+  OmitType(CreateCategoryHeroImageDto, [
+    'url',
+    'storagePath',
+  ] as const),
+) {}
+
+export class CategoryHeroImageOrderItemDto {
+  @IsUUID()
+  imageId!: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sortOrder!: number;
+}
+
+export class ReorderCategoryHeroImagesDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => CategoryHeroImageOrderItemDto)
+  images!: CategoryHeroImageOrderItemDto[];
+}
+
+export class CreateAdminPromotionDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(100)
+  @Matches(/^[A-Za-z0-9][A-Za-z0-9_-]*$/, {
+    message:
+      'code must contain only letters, numbers, hyphens and underscores',
+  })
+  code!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  description?: string;
+
+  @IsIn(PROMOTION_DISCOUNT_TYPES)
+  discountType!: (typeof PROMOTION_DISCOUNT_TYPES)[number];
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  discountValue!: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  minSubtotalCents?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  maxDiscountCents?: number | null;
+
+  @IsOptional()
+  @IsISO8601()
+  startsAt?: string | null;
+
+  @IsOptional()
+  @IsISO8601()
+  endsAt?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  usageLimit?: number | null;
+}
+
+export class UpdateAdminPromotionDto extends PartialType(
+  CreateAdminPromotionDto,
 ) {}
 
 export class ChangeUserRoleDto {

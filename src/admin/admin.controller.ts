@@ -25,9 +25,19 @@ import {
   ChangeUserRoleDto,
   CreateAdminCategoryDto,
   CreateAdminProductDto,
+  CreateAdminProductImageDto,
+  CreateAdminProductVariantDto,
+  CreateAdminPromotionDto,
+  CreateCategoryHeroImageDto,
+  ReorderAdminProductImagesDto,
+  ReorderCategoryHeroImagesDto,
   UpdateAdminCategoryDto,
   UpdateAdminInventoryDto,
   UpdateAdminProductDto,
+  UpdateAdminProductImageDto,
+  UpdateAdminProductVariantDto,
+  UpdateAdminPromotionDto,
+  UpdateCategoryHeroImageDto,
   UpdateOrderStatusDto,
 } from './admin.dto';
 
@@ -145,6 +155,68 @@ export class AdminController {
     return this.adminService.deleteCategory(id);
   }
 
+  // ──── Category Hero Images ────
+
+  @Get('categories/:id')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Get category details with hero images',
+  })
+  getCategoryDetails(
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.adminService.getCategoryWithHeroImages(id);
+  }
+
+  @Post('categories/:id/hero-images')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Add hero image to subcategory',
+  })
+  addCategoryHeroImage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: CreateCategoryHeroImageDto,
+  ) {
+    return this.adminService.addCategoryHeroImage(id, body);
+  }
+
+  @Put('categories/:id/hero-images/reorder')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Reorder category hero images',
+  })
+  reorderCategoryHeroImages(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: ReorderCategoryHeroImagesDto,
+  ) {
+    return this.adminService.reorderCategoryHeroImages(id, body.images);
+  }
+
+  @Put('categories/:id/hero-images/:imageId')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Update category hero image',
+  })
+  updateCategoryHeroImage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('imageId', ParseUUIDPipe) imageId: string,
+    @Body() body: UpdateCategoryHeroImageDto,
+  ) {
+    return this.adminService.updateCategoryHeroImage(id, imageId, body);
+  }
+
+  @Delete('categories/:id/hero-images/:imageId')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Delete category hero image',
+  })
+  deleteCategoryHeroImage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('imageId', ParseUUIDPipe) imageId: string,
+  ) {
+    return this.adminService.deleteCategoryHeroImage(id, imageId);
+  }
+
   @Get('products')
   @Roles('admin', 'super_admin')
   @ApiOperation({
@@ -157,6 +229,18 @@ export class AdminController {
       query.page,
       query.limit,
     );
+  }
+
+  @Get('products/:id')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary:
+      'Get product details with images, variants and inventory',
+  })
+  getProductDetails(
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.adminService.getProductDetails(id);
   }
 
   @Post('products')
@@ -196,10 +280,125 @@ export class AdminController {
     return this.adminService.deleteProduct(id);
   }
 
+  @Post('products/:id/images')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Add an image to a product',
+  })
+  addProductImage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: CreateAdminProductImageDto,
+  ) {
+    return this.adminService.addProductImage(
+      id,
+      body,
+    );
+  }
+
+  @Put('products/:id/images/reorder')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Reorder product images',
+  })
+  reorderProductImages(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: ReorderAdminProductImagesDto,
+  ) {
+    return this.adminService.reorderProductImages(
+      id,
+      body.images,
+    );
+  }
+
+  @Put('products/:id/images/:imageId')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary:
+      'Update a product image or set it as primary',
+  })
+  updateProductImage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('imageId', ParseUUIDPipe)
+    imageId: string,
+    @Body() body: UpdateAdminProductImageDto,
+  ) {
+    return this.adminService.updateProductImage(
+      id,
+      imageId,
+      body,
+    );
+  }
+
+  @Delete('products/:id/images/:imageId')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary:
+      'Delete a product image and clean up Storage',
+  })
+  deleteProductImage(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('imageId', ParseUUIDPipe)
+    imageId: string,
+  ) {
+    return this.adminService.deleteProductImage(
+      id,
+      imageId,
+    );
+  }
+
+  @Post('products/:id/variants')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Create a product variant',
+  })
+  createProductVariant(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: CreateAdminProductVariantDto,
+  ) {
+    return this.adminService.createProductVariant(
+      id,
+      body,
+    );
+  }
+
+  @Put('products/:id/variants/:variantId')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Update a product variant',
+  })
+  updateProductVariant(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('variantId', ParseUUIDPipe)
+    variantId: string,
+    @Body() body: UpdateAdminProductVariantDto,
+  ) {
+    return this.adminService.updateProductVariant(
+      id,
+      variantId,
+      body,
+    );
+  }
+
+  @Delete('products/:id/variants/:variantId')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Deactivate a product variant',
+  })
+  deleteProductVariant(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('variantId', ParseUUIDPipe)
+    variantId: string,
+  ) {
+    return this.adminService.deleteProductVariant(
+      id,
+      variantId,
+    );
+  }
+
   @Put('products/:id/inventory')
   @Roles('admin', 'super_admin')
   @ApiOperation({
-    summary: 'Update product inventory',
+    summary: 'Update product or variant inventory',
   })
   updateInventory(
     @Param('id', ParseUUIDPipe) id: string,
@@ -209,6 +408,57 @@ export class AdminController {
       id,
       body,
     );
+  }
+
+  @Get('promotions')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Get all promotions',
+  })
+  getAllPromotions(
+    @Query() query: AdminPaginationDto,
+  ) {
+    return this.adminService.getAllPromotions(
+      query.page,
+      query.limit,
+    );
+  }
+
+  @Post('promotions')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Create promotion',
+  })
+  createPromotion(
+    @Body() body: CreateAdminPromotionDto,
+  ) {
+    return this.adminService.createPromotion(body);
+  }
+
+  @Put('promotions/:id')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Update promotion',
+  })
+  updatePromotion(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: UpdateAdminPromotionDto,
+  ) {
+    return this.adminService.updatePromotion(
+      id,
+      body,
+    );
+  }
+
+  @Delete('promotions/:id')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Deactivate promotion',
+  })
+  deletePromotion(
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.adminService.deletePromotion(id);
   }
 
   @Get('users')

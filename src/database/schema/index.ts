@@ -6,6 +6,8 @@ export { addresses } from './addresses';
 
 export { categories } from './categories';
 
+export { categoryImages } from './category-images';
+
 export {
   products,
   productImages,
@@ -35,3 +37,8 @@ export {
 export { idempotencyKeys } from './idempotency-keys';
 
 export { productReviews } from './product-reviews';
+
+export {
+  promotions,
+  promotionDiscountTypeEnum,
+} from './promotions';

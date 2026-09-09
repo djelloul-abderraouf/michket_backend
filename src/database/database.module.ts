@@ -31,7 +31,6 @@ class DatabasePoolLifecycle implements OnApplicationShutdown {
   }
 }
 
-
 @Global()
 @Module({
   imports: [ConfigModule],
@@ -43,32 +42,92 @@ class DatabasePoolLifecycle implements OnApplicationShutdown {
         const logger = new Logger('Database');
 
         const pool = new Pool({
-          connectionString: configService.getOrThrow<string>('DATABASE_URL'),
-          max: configService.get<number>('DATABASE_POOL_MAX', 10),
+          connectionString:
+            configService.getOrThrow<string>('DATABASE_URL'),
+
+          // Supabase already provides a pooler. Keeping the application-side
+          // pool modest avoids opening unnecessary concurrent sessions.
+          max: configService.get<number>(
+            'DATABASE_POOL_MAX',
+            5,
+          ),
+
           idleTimeoutMillis: 30_000,
-          connectionTimeoutMillis: 5_000,
+
+          // 5 seconds was too aggressive in practice: a temporary network /
+          // Supabase pooler delay caused otherwise valid requests to fail.
+          connectionTimeoutMillis:
+            configService.get<number>(
+              'DATABASE_CONNECTION_TIMEOUT_MS',
+              15_000,
+            ),
+
           keepAlive: true,
         });
 
-        try {
-          await pool.query('SELECT 1');
-          logger.log('✅ Database connected');
-        } catch (error) {
-          logger.error('❌ Database connection failed', error);
-          await pool.end().catch(() => undefined);
-          throw error;
+        // An error on an idle pooled client should be logged instead of
+        // becoming an unhandled pool error.
+        pool.on('error', (error) => {
+          logger.error(
+            `PostgreSQL idle client error: ${error.message}`,
+            error.stack,
+          );
+        });
+
+        // Startup can also hit a short transient pooler/network delay.
+        // Retry a few times before refusing to start the application.
+        const startupAttempts = 3;
+
+        for (
+          let attempt = 1;
+          attempt <= startupAttempts;
+          attempt += 1
+        ) {
+          try {
+            await pool.query('SELECT 1');
+            logger.log('✅ Database connected');
+            return pool;
+          } catch (error) {
+            const message =
+              error instanceof Error
+                ? error.message
+                : String(error);
+
+            if (attempt === startupAttempts) {
+              logger.error(
+                `❌ Database connection failed after ${startupAttempts} attempts: ${message}`,
+                error instanceof Error ? error.stack : undefined,
+              );
+
+              await pool.end().catch(() => undefined);
+              throw error;
+            }
+
+            logger.warn(
+              `Database connection attempt ${attempt}/${startupAttempts} failed: ${message}. Retrying...`,
+            );
+
+            await new Promise((resolve) =>
+              setTimeout(resolve, attempt * 1_000),
+            );
+          }
         }
 
-        return pool;
+        // TypeScript safeguard; the loop either returns or throws.
+        throw new Error('Unable to initialize database pool');
       },
     },
     {
       provide: DATABASE_CONNECTION,
       inject: [DATABASE_POOL],
-      useFactory: (pool: Pool) => drizzle(pool, { schema }),
+      useFactory: (pool: Pool) =>
+        drizzle(pool, { schema }),
     },
     DatabasePoolLifecycle,
   ],
-  exports: [DATABASE_CONNECTION, DATABASE_POOL],
+  exports: [
+    DATABASE_CONNECTION,
+    DATABASE_POOL,
+  ],
 })
 export class DatabaseModule {}

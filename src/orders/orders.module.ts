@@ -8,6 +8,7 @@ import { OrderExpirationReconciler } from './order-expiration.reconciler';
 import { DatabaseModule } from '../database/database.module';
 import { DeliveryModule } from '../delivery/delivery.module';
 import { QueueModule } from '../queue/queue.module';
+import { PromotionsModule } from '../promotions/promotions.module';
 import { OrderExpirationQueueService } from '../queue/order-expiration.queue';
 
 @Module({
@@ -15,6 +16,7 @@ import { OrderExpirationQueueService } from '../queue/order-expiration.queue';
     DatabaseModule,
     DeliveryModule,
     QueueModule,
+    PromotionsModule,
   ],
   controllers: [OrdersController],
   providers: [

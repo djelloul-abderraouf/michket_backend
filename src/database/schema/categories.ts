@@ -20,11 +20,30 @@ export const categories = pgTable(
 
     description: text('description'),
 
+    // Main title displayed on the category/subcategory page.
+    // Example: "Lampes 3D personnalisées"
+    pageTitle: text('page_title'),
+
+    // Heading displayed above the products list.
+    // Example: "Une lumière unique pour chaque histoire"
+    productsTitle: text('products_title'),
+
+    // Label used for the category product filter.
+    // Example: "Filtrer : Toutes les lampes"
+    filterLabel: text('filter_label'),
+
+    // Profile / presentation image for the category or subcategory.
     imageUrl: text('image_url'),
+
+    // Exact object path in Supabase Storage for imageUrl.
+    // Allows safe replacement/deletion of the image later.
+    imageStoragePath: text('image_storage_path'),
 
     href: text('href'),
 
-    // Self-reference: a category can optionally belong to another category.
+    // Self-reference:
+    // parentId = null -> top-level category
+    // parentId = category id -> subcategory
     parentId: uuid('parent_id').references(
       (): AnyPgColumn => categories.id,
       { onDelete: 'set null' },

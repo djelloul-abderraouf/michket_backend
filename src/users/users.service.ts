@@ -337,6 +337,12 @@ export class UsersService {
           );
         }
 
+        // A PUT with an empty body should be a safe no-op.
+        // Drizzle must not receive .set({}) because there is nothing to update.
+        if (Object.keys(data).length === 0) {
+          return existingAddress;
+        }
+
         if (data.isDefault === true) {
           await tx
             .update(addresses)

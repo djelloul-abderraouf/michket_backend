@@ -47,27 +47,51 @@ async function bootstrap() {
 
   await app.register(helmet);
 
-  const rateLimitRedis = redisUrl
-    ? new IORedis(redisUrl, {
-        maxRetriesPerRequest: 2,
+  let rateLimitRedis: IORedis | undefined;
+
+  if (redisUrl) {
+    const redisCandidate = new IORedis(
+      redisUrl,
+      {
+        maxRetriesPerRequest: 1,
         enableReadyCheck: true,
         lazyConnect: true,
-      })
-    : undefined;
+        connectTimeout: 10000,
 
-  if (rateLimitRedis) {
-    rateLimitRedis.on('error', (error) => {
+        // This connection is only a startup probe for the rate limiter.
+        // If Redis is unavailable, we fall back to local memory instead
+        // of blocking the whole API startup.
+        retryStrategy: () => null,
+      },
+    );
+
+    redisCandidate.on('error', (error) => {
       logger.error(
         `Rate-limit Redis error: ${error.message}`,
       );
     });
 
-    await rateLimitRedis.connect();
-    await rateLimitRedis.ping();
+    try {
+      await redisCandidate.connect();
+      await redisCandidate.ping();
 
-    logger.log(
-      'Rate limiting backend: Redis',
-    );
+      rateLimitRedis = redisCandidate;
+
+      logger.log(
+        'Rate limiting backend: Redis',
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Unknown Redis error';
+
+      logger.warn(
+        `Rate-limit Redis unavailable during startup: ${message}. Falling back to local memory for this process.`,
+      );
+
+      redisCandidate.disconnect();
+    }
   } else {
     logger.warn(
       'REDIS_URL is missing: rate limiting uses local memory only',
@@ -101,12 +125,14 @@ async function bootstrap() {
       .getHttpAdapter()
       .getInstance()
       .addHook('onClose', async () => {
-        if (rateLimitRedis.status === 'ready') {
+        if (
+          rateLimitRedis?.status === 'ready'
+        ) {
           await rateLimitRedis.quit();
           return;
         }
 
-        rateLimitRedis.disconnect();
+        rateLimitRedis?.disconnect();
       });
   }
 
