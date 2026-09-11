@@ -35,9 +35,6 @@ async function bootstrap() {
       AppModule,
       new FastifyAdapter({
         trustProxy: isProduction,
-
-        // Slightly above the 10 MB image limit so multipart requests
-        // are not rejected before @fastify/multipart handles them.
         bodyLimit: 12 * 1024 * 1024,
       }),
       {
@@ -57,17 +54,26 @@ async function bootstrap() {
         enableReadyCheck: true,
         lazyConnect: true,
         connectTimeout: 10000,
-
-        // This connection is only a startup probe for the rate limiter.
-        // If Redis is unavailable, we fall back to local memory instead
-        // of blocking the whole API startup.
-        retryStrategy: () => null,
+        retryStrategy: (times) =>
+          Math.min(times * 1000, 10000),
       },
     );
 
     redisCandidate.on('error', (error) => {
       logger.error(
         `Rate-limit Redis error: ${error.message}`,
+      );
+    });
+
+    redisCandidate.on('reconnecting', (delay: number) => {
+      logger.warn(
+        `Rate-limit Redis reconnecting in ${delay} ms`,
+      );
+    });
+
+    redisCandidate.on('ready', () => {
+      logger.log(
+        'Rate-limit Redis connection ready',
       );
     });
 
@@ -100,20 +106,15 @@ async function bootstrap() {
 
   await app.register(rateLimit, {
     global: true,
-
-    // Baseline protection for every public API route.
-    // Sensitive routes will receive stricter limits separately.
     max: GLOBAL_RATE_LIMIT_MAX,
     timeWindow: '1 minute',
-
     redis: rateLimitRedis,
 
-    // Do not provide a custom keyGenerator here.
-    // @fastify/rate-limit >= 11.2.0 securely normalizes IPv4/IPv6
-    // addresses with its built-in key generator.
+    // If Redis becomes unavailable after startup, do not fail API requests.
+    skipOnError: true,
+
     ipv6Subnet: 64,
 
-    // Health checks must remain usable by hosting/monitoring systems.
     allowList: (request) =>
       request.url.startsWith(
         `/${apiPrefix}/health`,

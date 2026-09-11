@@ -9,6 +9,7 @@ import {
   and,
   eq,
   isNull,
+  inArray,
 } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
@@ -18,6 +19,7 @@ import {
   cartItems,
   products,
   productVariants,
+  productImages,
 } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 
@@ -397,38 +399,28 @@ export class CartsService {
   }
 
   async getCartItems(cartId: string) {
-    return this.db
+    const items = await this.db
       .select({
         id: cartItems.id,
-        quantity:
-          cartItems.quantity,
-        unitPriceCents:
-          cartItems.unitPriceCents,
-        personalization:
-          cartItems.personalization,
-        personalizationKey:
-          cartItems.personalizationKey,
-        selectedColorName:
-          cartItems.selectedColorName,
-        selectedColorHex:
-          cartItems.selectedColorHex,
+        quantity: cartItems.quantity,
+        unitPriceCents: cartItems.unitPriceCents,
+        personalization: cartItems.personalization,
+        personalizationKey: cartItems.personalizationKey,
+        selectedColorName: cartItems.selectedColorName,
+        selectedColorHex: cartItems.selectedColorHex,
         variant: {
           id: productVariants.id,
           name: productVariants.name,
           sku: productVariants.sku,
-          colorName:
-            productVariants.colorName,
-          colorHex:
-            productVariants.colorHex,
+          colorName: productVariants.colorName,
+          colorHex: productVariants.colorHex,
         },
         product: {
           id: products.id,
           name: products.name,
           slug: products.slug,
-          priceCents:
-            products.priceCents,
-          isPersonalizable:
-            products.isPersonalizable,
+          priceCents: products.priceCents,
+          isPersonalizable: products.isPersonalizable,
         },
       })
       .from(cartItems)
@@ -452,6 +444,108 @@ export class CartsService {
           cartId,
         ),
       );
+
+    if (items.length === 0) {
+      return [];
+    }
+
+    const productIds = [
+      ...new Set(
+        items.map((item) => item.product.id),
+      ),
+    ];
+
+    const images = await this.db
+      .select({
+        id: productImages.id,
+        productId: productImages.productId,
+        url: productImages.url,
+        altText: productImages.altText,
+        sortOrder: productImages.sortOrder,
+        isPrimary: productImages.isPrimary,
+        variantId: productImages.variantId,
+      })
+      .from(productImages)
+      .where(
+        inArray(
+          productImages.productId,
+          productIds,
+        ),
+      );
+
+    type CartImage = (typeof images)[number];
+
+    const imagesByProduct = new Map<
+      string,
+      CartImage[]
+    >();
+
+    for (const image of images) {
+      const current =
+        imagesByProduct.get(image.productId) ?? [];
+
+      current.push(image);
+      imagesByProduct.set(
+        image.productId,
+        current,
+      );
+    }
+
+    const sortImages = (
+      a: CartImage,
+      b: CartImage,
+    ) => {
+      if (a.isPrimary && !b.isPrimary) {
+        return -1;
+      }
+
+      if (!a.isPrimary && b.isPrimary) {
+        return 1;
+      }
+
+      if (a.sortOrder !== b.sortOrder) {
+        return a.sortOrder - b.sortOrder;
+      }
+
+      return a.id.localeCompare(b.id);
+    };
+
+    return items.map((item) => {
+      const availableImages =
+        imagesByProduct.get(item.product.id) ?? [];
+
+      const variantImages = item.variant?.id
+        ? availableImages
+            .filter(
+              (image) =>
+                image.variantId === item.variant?.id,
+            )
+            .sort(sortImages)
+        : [];
+
+      const generalImages = availableImages
+        .filter(
+          (image) => image.variantId === null,
+        )
+        .sort(sortImages);
+
+      const selectedImage =
+        variantImages[0] ??
+        generalImages[0] ??
+        null;
+
+      return {
+        ...item,
+        product: {
+          ...item.product,
+          imageUrl: selectedImage?.url ?? null,
+          imageAlt: selectedImage
+            ? selectedImage.altText ??
+              item.product.name
+            : null,
+        },
+      };
+    });
   }
 
   async calculateCartTotal(

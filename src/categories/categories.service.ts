@@ -7,6 +7,7 @@ import {
   and,
   asc,
   eq,
+  isNull,
 } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
@@ -52,7 +53,6 @@ export class CategoriesService {
       );
     }
 
-    // Fetch children (subcategories) if this is a main category
     const children = category.parentId === null
       ? await this.db
           .select()
@@ -63,10 +63,12 @@ export class CategoriesService {
               eq(categories.isActive, true),
             ),
           )
-          .orderBy(asc(categories.sortOrder), asc(categories.name))
+          .orderBy(
+            asc(categories.sortOrder),
+            asc(categories.name),
+          )
       : [];
 
-    // Fetch hero images for this category
     const heroImages = await this.db
       .select()
       .from(categoryImages)
@@ -93,23 +95,28 @@ export class CategoriesService {
       .limit(1);
 
     if (!category) {
-      throw new NotFoundException(
-        'Category not found',
-      );
+      throw new NotFoundException('Category not found');
     }
 
     return category;
   }
 
   async findFeatured() {
+    // The homepage has four featured-category slots.
+    // Only main categories belong in this endpoint.
     return this.db
       .select()
       .from(categories)
-      .where(eq(categories.isActive, true))
+      .where(
+        and(
+          eq(categories.isActive, true),
+          isNull(categories.parentId),
+        ),
+      )
       .orderBy(
         asc(categories.sortOrder),
         asc(categories.name),
       )
-      .limit(3);
+      .limit(4);
   }
 }

@@ -31,6 +31,7 @@ import {
   promotions,
   users,
 } from '../database/schema';
+import { cartItems } from '../database/schema/carts';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { OrdersService } from '../orders/orders.service';
 import { MediaService } from '../media/media.service';
@@ -475,6 +476,20 @@ export class AdminService {
       );
     }
 
+    if (input.isActive === true) {
+      const effectiveParentId =
+        input.parentId !== undefined
+          ? input.parentId
+          : existing.parentId;
+
+      if (effectiveParentId) {
+        await this.assertValidCategoryParent(
+          categoryId,
+          effectiveParentId,
+        );
+      }
+    }
+
     // Track old image for Storage cleanup after DB update
     const oldImageStoragePath = existing.imageStoragePath;
 
@@ -605,48 +620,193 @@ export class AdminService {
   async deleteCategory(
     categoryId: string,
   ) {
-    const [existing] = await this.db
-      .select({
-        id: categories.id,
-        isActive: categories.isActive,
-      })
-      .from(categories)
-      .where(eq(categories.id, categoryId))
-      .limit(1);
+    /*
+     * Permanent category deletion.
+     *
+     * This is intentionally conservative:
+     * - a category cannot be permanently deleted while products still use it;
+     * - a parent category cannot be permanently deleted while child categories exist;
+     * - profile and hero images are removed from PostgreSQL first, then their
+     *   Supabase Storage objects are cleaned up best-effort.
+     *
+     * Activation/deactivation is handled separately through updateCategory()
+     * with isActive=true/false.
+     */
+    const deletedCategory =
+      await this.db.transaction(
+        async (tx) => {
+          const [existing] = await tx
+            .select({
+              id: categories.id,
+              name: categories.name,
+              imageStoragePath:
+                categories.imageStoragePath,
+            })
+            .from(categories)
+            .where(
+              eq(
+                categories.id,
+                categoryId,
+              ),
+            )
+            .for('update')
+            .limit(1);
 
-    if (!existing) {
-      throw new NotFoundException(
-        'Category not found',
+          if (!existing) {
+            throw new NotFoundException(
+              'Category not found',
+            );
+          }
+
+          const [[productUsage], [childUsage]] =
+            await Promise.all([
+              tx
+                .select({
+                  count: sql<number>`count(*)::int`,
+                })
+                .from(products)
+                .where(
+                  eq(
+                    products.categoryId,
+                    categoryId,
+                  ),
+                ),
+
+              tx
+                .select({
+                  count: sql<number>`count(*)::int`,
+                })
+                .from(categories)
+                .where(
+                  eq(
+                    categories.parentId,
+                    categoryId,
+                  ),
+                ),
+            ]);
+
+          if (
+            (productUsage?.count ?? 0) > 0
+          ) {
+            throw new ConflictException(
+              'Category cannot be permanently deleted while products still use it',
+            );
+          }
+
+          if (
+            (childUsage?.count ?? 0) > 0
+          ) {
+            throw new ConflictException(
+              'Category cannot be permanently deleted while child categories still exist',
+            );
+          }
+
+          const heroImages = await tx
+            .select({
+              storagePath:
+                categoryImages.storagePath,
+            })
+            .from(categoryImages)
+            .where(
+              eq(
+                categoryImages.categoryId,
+                categoryId,
+              ),
+            );
+
+          await tx
+            .delete(categoryImages)
+            .where(
+              eq(
+                categoryImages.categoryId,
+                categoryId,
+              ),
+            );
+
+          const [deleted] = await tx
+            .delete(categories)
+            .where(
+              eq(
+                categories.id,
+                categoryId,
+              ),
+            )
+            .returning({
+              id: categories.id,
+            });
+
+          if (!deleted) {
+            throw new NotFoundException(
+              'Category not found',
+            );
+          }
+
+          const storagePaths = Array.from(
+            new Set(
+              [
+                existing.imageStoragePath,
+                ...heroImages.map(
+                  (image) =>
+                    image.storagePath,
+                ),
+              ].filter(
+                (
+                  storagePath,
+                ): storagePath is string =>
+                  Boolean(
+                    storagePath,
+                  ),
+              ),
+            ),
+          );
+
+          return {
+            id: deleted.id,
+            name: existing.name,
+            storagePaths,
+          };
+        },
       );
+
+    let storageDeleted = 0;
+    let storageCleanupFailed = 0;
+
+    for (const storagePath of
+      deletedCategory.storagePaths) {
+      try {
+        await this.mediaService.delete(
+          storagePath,
+        );
+
+        storageDeleted += 1;
+      } catch (error) {
+        if (
+          error instanceof
+          NotFoundException
+        ) {
+          storageDeleted += 1;
+          continue;
+        }
+
+        storageCleanupFailed += 1;
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : String(error);
+
+        this.logger.warn(
+          `Category "${deletedCategory.name}" (${deletedCategory.id}) was deleted from PostgreSQL but Storage cleanup failed for ${storagePath}: ${message}`,
+        );
+      }
     }
-
-    if (!existing.isActive) {
-      return {
-        success: true,
-        id: existing.id,
-        alreadyInactive: true,
-      };
-    }
-
-    await this.assertCategoryCanBeDeactivated(
-      categoryId,
-    );
-
-    const [updated] = await this.db
-      .update(categories)
-      .set({
-        isActive: false,
-        updatedAt: new Date(),
-      })
-      .where(eq(categories.id, categoryId))
-      .returning({
-        id: categories.id,
-        isActive: categories.isActive,
-      });
 
     return {
       success: true,
-      ...updated,
+      id: deletedCategory.id,
+      permanentlyDeleted: true,
+      storageDeleted,
+      storageCleanupFailed,
     };
   }
 
@@ -1040,37 +1200,149 @@ export class AdminService {
   async deleteProduct(
     productId: string,
   ) {
-    const [product] = await this.db
-      .update(products)
-      .set({
-        isActive: false,
-        updatedAt: new Date(),
-      })
-      .where(eq(products.id, productId))
-      .returning();
+    /*
+     * Permanent catalogue deletion.
+     *
+     * - order_items keep immutable snapshots and their product/variant
+     *   foreign keys are configured with ON DELETE SET NULL, so order
+     *   history remains intact.
+     * - product images, variants and inventory are removed by PostgreSQL
+     *   cascades from products.
+     * - cart_items do not cascade and have non-null productId, so they must
+     *   be removed explicitly before deleting the product.
+     * - Supabase Storage objects are cleaned up after the DB transaction.
+     */
+    const deletedProduct =
+      await this.db.transaction(
+        async (tx) => {
+          const [existing] = await tx
+            .select({
+              id: products.id,
+              name: products.name,
+            })
+            .from(products)
+            .where(
+              eq(
+                products.id,
+                productId,
+              ),
+            )
+            .for('update')
+            .limit(1);
 
-    if (!product) {
-      throw new NotFoundException(
-        'Product not found',
+          if (!existing) {
+            throw new NotFoundException(
+              'Product not found',
+            );
+          }
+
+          const imageRows = await tx
+            .select({
+              storagePath:
+                productImages.storagePath,
+            })
+            .from(productImages)
+            .where(
+              eq(
+                productImages.productId,
+                productId,
+              ),
+            );
+
+          // cart_items.productId is NOT nullable and has no ON DELETE
+          // cascade, so stale cart lines must be removed first.
+          await tx
+            .delete(cartItems)
+            .where(
+              eq(
+                cartItems.productId,
+                productId,
+              ),
+            );
+
+          const [deleted] = await tx
+            .delete(products)
+            .where(
+              eq(
+                products.id,
+                productId,
+              ),
+            )
+            .returning({
+              id: products.id,
+            });
+
+          if (!deleted) {
+            throw new NotFoundException(
+              'Product not found',
+            );
+          }
+
+          return {
+            id: deleted.id,
+            name: existing.name,
+            storagePaths: Array.from(
+              new Set(
+                imageRows
+                  .map(
+                    (image) =>
+                      image.storagePath,
+                  )
+                  .filter(
+                    (
+                      storagePath,
+                    ): storagePath is string =>
+                      Boolean(
+                        storagePath,
+                      ),
+                  ),
+              ),
+            ),
+          };
+        },
       );
+
+    let storageDeleted = 0;
+    let storageCleanupFailed = 0;
+
+    for (const storagePath of
+      deletedProduct.storagePaths) {
+      try {
+        await this.mediaService.delete(
+          storagePath,
+        );
+
+        storageDeleted += 1;
+      } catch (error) {
+        if (
+          error instanceof
+          NotFoundException
+        ) {
+          // The DB deletion is already complete and a missing Storage
+          // object means there is nothing left to clean up.
+          storageDeleted += 1;
+          continue;
+        }
+
+        storageCleanupFailed += 1;
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : String(error);
+
+        this.logger.warn(
+          `Product "${deletedProduct.name}" (${deletedProduct.id}) was deleted from PostgreSQL but Storage cleanup failed for ${storagePath}: ${message}`,
+        );
+      }
     }
-
-    await this.db
-      .update(productVariants)
-      .set({
-        isActive: false,
-        updatedAt: new Date(),
-      })
-      .where(
-        eq(
-          productVariants.productId,
-          productId,
-        ),
-      );
 
     return {
       success: true,
-      id: product.id,
+      id: deletedProduct.id,
+      permanentlyDeleted: true,
+      storageDeleted,
+      storageCleanupFailed,
     };
   }
 
@@ -1807,6 +2079,19 @@ export class AdminService {
             );
           }
 
+          const [existingVariant] = await tx
+            .select({
+              id: productVariants.id,
+            })
+            .from(productVariants)
+            .where(
+              eq(
+                productVariants.productId,
+                productId,
+              ),
+            )
+            .limit(1);
+
           const [productInventory] =
             await tx
               .select()
@@ -1825,24 +2110,22 @@ export class AdminService {
               .for('update')
               .limit(1);
 
-          if (productInventory) {
-            if (
-              productInventory.quantity > 0 ||
-              productInventory.reserved > 0
-            ) {
-              throw new ConflictException(
-                'Product-level inventory must be empty before variants can be added',
-              );
-            }
+          if (
+            productInventory &&
+            existingVariant
+          ) {
+            throw new ConflictException(
+              'Product inventory is inconsistent: product-level stock cannot coexist with variants',
+            );
+          }
 
-            await tx
-              .delete(inventory)
-              .where(
-                eq(
-                  inventory.id,
-                  productInventory.id,
-                ),
-              );
+          if (
+            productInventory &&
+            productInventory.reserved > 0
+          ) {
+            throw new ConflictException(
+              'Cannot add the first variant while product stock is reserved',
+            );
           }
 
           const [variant] = await tx
@@ -1874,7 +2157,51 @@ export class AdminService {
             | typeof inventory.$inferSelect
             | null = null;
 
-          if (input.inventory) {
+          if (productInventory) {
+            if (input.inventory) {
+              await tx
+                .delete(inventory)
+                .where(
+                  eq(
+                    inventory.id,
+                    productInventory.id,
+                  ),
+                );
+
+              [variantInventory] = await tx
+                .insert(inventory)
+                .values({
+                  productId,
+                  variantId:
+                    variant.id,
+                  quantity:
+                    input.inventory.quantity,
+                  lowStockThreshold:
+                    input.inventory
+                      .lowStockThreshold ?? 5,
+                  trackInventory:
+                    input.inventory
+                      .trackInventory ?? true,
+                })
+                .returning();
+            } else {
+              [variantInventory] = await tx
+                .update(inventory)
+                .set({
+                  variantId:
+                    variant.id,
+                  updatedAt:
+                    new Date(),
+                })
+                .where(
+                  eq(
+                    inventory.id,
+                    productInventory.id,
+                  ),
+                )
+                .returning();
+            }
+          } else if (input.inventory) {
             [variantInventory] = await tx
               .insert(inventory)
               .values({

@@ -74,7 +74,6 @@ export class ProductsService {
       }
 
       if (category.parentId === null) {
-        // Main category — include products from this category AND all active children
         const children = await this.db
           .select({ id: categories.id })
           .from(categories)
@@ -88,7 +87,6 @@ export class ProductsService {
         const categoryIds = [category.id, ...children.map((c) => c.id)];
         conditions.push(inArray(products.categoryId, categoryIds));
       } else {
-        // Subcategory — exact match only
         conditions.push(eq(products.categoryId, category.id));
       }
     }
@@ -103,32 +101,22 @@ export class ProductsService {
     }
 
     if (filters?.minPrice !== undefined) {
-      conditions.push(
-        gte(products.priceCents, filters.minPrice),
-      );
+      conditions.push(gte(products.priceCents, filters.minPrice));
     }
 
     if (filters?.maxPrice !== undefined) {
-      conditions.push(
-        lte(products.priceCents, filters.maxPrice),
-      );
+      conditions.push(lte(products.priceCents, filters.maxPrice));
     }
 
     if (filters?.personalizable !== undefined) {
       conditions.push(
-        eq(
-          products.isPersonalizable,
-          filters.personalizable,
-        ),
+        eq(products.isPersonalizable, filters.personalizable),
       );
     }
 
     if (filters?.search?.trim()) {
       conditions.push(
-        ilike(
-          products.name,
-          `%${filters.search.trim()}%`,
-        ),
+        ilike(products.name, `%${filters.search.trim()}%`),
       );
     }
 
@@ -149,26 +137,27 @@ export class ProductsService {
         description: products.description,
         shortDescription: products.shortDescription,
         categoryId: products.categoryId,
+        categorySlug: categories.slug,
+        categoryName: categories.name,
         priceCents: products.priceCents,
         compareAtPriceCents: products.compareAtPriceCents,
         currency: products.currency,
         badge: products.badge,
         occasions: products.occasions,
         isPersonalizable: products.isPersonalizable,
-        personalizationPrompt:
-          products.personalizationPrompt,
+        personalizationPrompt: products.personalizationPrompt,
         ratingAvg: products.ratingAvg,
         ratingCount: products.ratingCount,
         createdAt: products.createdAt,
       })
       .from(products)
+      .innerJoin(categories, eq(products.categoryId, categories.id))
       .where(where)
       .orderBy(...this.getSort(filters?.sort))
       .limit(limit)
       .offset(offset);
 
-    const data =
-      await this.attachPrimaryImages(productList);
+    const data = await this.attachPrimaryImages(productList);
 
     return new PaginatedResponseDto(
       data,
@@ -196,39 +185,47 @@ export class ProductsService {
       );
     }
 
-    const images = await this.db
-      .select()
-      .from(productImages)
-      .where(eq(productImages.productId, product.id))
-      .orderBy(
-        desc(productImages.isPrimary),
-        asc(productImages.sortOrder),
-        asc(productImages.createdAt),
-      );
-
-    const variants = await this.db
-      .select()
-      .from(productVariants)
-      .where(
-        and(
-          eq(productVariants.productId, product.id),
-          eq(productVariants.isActive, true),
+    const [
+      images,
+      variants,
+      inventoryRows,
+      [category],
+    ] = await Promise.all([
+      this.db
+        .select()
+        .from(productImages)
+        .where(eq(productImages.productId, product.id))
+        .orderBy(
+          desc(productImages.isPrimary),
+          asc(productImages.sortOrder),
+          asc(productImages.createdAt),
         ),
-      )
-      .orderBy(
-        asc(productVariants.sortOrder),
-        asc(productVariants.name),
-      );
-
-    const inventoryRows = await this.db
-      .select()
-      .from(inventory)
-      .where(eq(inventory.productId, product.id));
+      this.db
+        .select()
+        .from(productVariants)
+        .where(
+          and(
+            eq(productVariants.productId, product.id),
+            eq(productVariants.isActive, true),
+          ),
+        )
+        .orderBy(
+          asc(productVariants.sortOrder),
+          asc(productVariants.name),
+        ),
+      this.db
+        .select()
+        .from(inventory)
+        .where(eq(inventory.productId, product.id)),
+      this.db
+        .select()
+        .from(categories)
+        .where(eq(categories.id, product.categoryId))
+        .limit(1),
+    ]);
 
     const productInventory =
-      inventoryRows.find(
-        (row) => row.variantId === null,
-      ) ?? null;
+      inventoryRows.find((row) => row.variantId === null) ?? null;
 
     const inventoryByVariant = new Map(
       inventoryRows
@@ -236,21 +233,17 @@ export class ProductsService {
         .map((row) => [row.variantId, row]),
     );
 
-    const variantsWithInventory = variants.map(
-      (variant) => ({
-        ...variant,
-        inventory:
-          inventoryByVariant.get(variant.id) ?? null,
-      }),
-    );
+    const variantsWithInventory = variants.map((variant) => ({
+      ...variant,
+      inventory: inventoryByVariant.get(variant.id) ?? null,
+    }));
 
     return {
       ...product,
       images,
       variants: variantsWithInventory,
-
-      // Product-level stock for products without variants.
       inventory: productInventory,
+      category: category ?? null,
     };
   }
 
@@ -260,22 +253,30 @@ export class ProductsService {
         ? Math.min(limit, 50)
         : 10;
 
+    // Keep the public list contract identical to GET /products.
     const productList = await this.db
       .select({
         id: products.id,
         name: products.name,
         slug: products.slug,
+        description: products.description,
         shortDescription: products.shortDescription,
+        categoryId: products.categoryId,
+        categorySlug: categories.slug,
+        categoryName: categories.name,
         priceCents: products.priceCents,
         compareAtPriceCents: products.compareAtPriceCents,
         currency: products.currency,
         badge: products.badge,
+        occasions: products.occasions,
+        isPersonalizable: products.isPersonalizable,
+        personalizationPrompt: products.personalizationPrompt,
         ratingAvg: products.ratingAvg,
         ratingCount: products.ratingCount,
-        isPersonalizable: products.isPersonalizable,
         createdAt: products.createdAt,
       })
       .from(products)
+      .innerJoin(categories, eq(products.categoryId, categories.id))
       .where(
         and(
           eq(products.isActive, true),
@@ -308,9 +309,7 @@ export class ProductsService {
       return [];
     }
 
-    const productIds = productList.map(
-      (product) => product.id,
-    );
+    const productIds = productList.map((product) => product.id);
 
     const images = await this.db
       .select({
@@ -319,6 +318,7 @@ export class ProductsService {
         altText: productImages.altText,
         isPrimary: productImages.isPrimary,
         sortOrder: productImages.sortOrder,
+        variantId: productImages.variantId,
         createdAt: productImages.createdAt,
       })
       .from(productImages)
@@ -329,27 +329,33 @@ export class ProductsService {
         asc(productImages.createdAt),
       );
 
-    const primaryImageByProduct = new Map<
+    const imagesByProduct = new Map<
       string,
-      {
+      Array<{
         url: string;
         altText: string | null;
-      }
+        variantId: string | null;
+      }>
     >();
 
     for (const image of images) {
-      if (!primaryImageByProduct.has(image.productId)) {
-        primaryImageByProduct.set(image.productId, {
-          url: image.url,
-          altText: image.altText,
-        });
-      }
+      const list = imagesByProduct.get(image.productId) ?? [];
+      list.push({
+        url: image.url,
+        altText: image.altText,
+        variantId: image.variantId,
+      });
+      imagesByProduct.set(image.productId, list);
     }
 
     return productList.map((product) => {
-      const image = primaryImageByProduct.get(
-        product.id,
-      );
+      const candidates = imagesByProduct.get(product.id) ?? [];
+
+      // A catalogue card has no selected variant, so prefer a general image.
+      // Fall back to the first product image only if no general image exists.
+      const image =
+        candidates.find((candidate) => candidate.variantId === null) ??
+        candidates[0];
 
       return {
         ...product,
