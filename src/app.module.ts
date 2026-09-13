@@ -14,6 +14,19 @@ import { AdminModule } from './admin/admin.module';
 import { DeliveryModule } from './delivery/delivery.module';
 import { UsersModule } from './users/users.module';
 import { MediaModule } from './media/media.module';
+import { CrmBaseModule } from './crm-base/crm-base.module';
+import { CrmDashboardModule } from './crm-dashboard/crm-dashboard.module';
+import { CrmEmployeesModule } from './crm-employees/crm-employees.module';
+import { CrmCustomersModule } from './crm-customers/crm-customers.module';
+import { CrmCompaniesModule } from './crm-companies/crm-companies.module';
+import { CrmActivitiesModule } from './crm-activities/crm-activities.module';
+import { CrmProjectsModule } from './crm-projects/crm-projects.module';
+import { CrmProductsModule } from './crm-products/crm-products.module';
+import { CrmDealsModule } from './crm-deals/crm-deals.module';
+import { CrmProposalsModule } from './crm-proposals/crm-proposals.module';
+import { CrmOrdersModule } from './crm-orders/crm-orders.module';
+import { CrmProductionModule } from './crm-production/crm-production.module';
+import { CrmTasksModule } from './crm-tasks/crm-tasks.module';
 
 @Module({
   imports: [
@@ -36,6 +49,19 @@ import { MediaModule } from './media/media.module';
     DeliveryModule,
     UsersModule,
     MediaModule,
+    CrmBaseModule,
+    CrmDashboardModule,
+    CrmEmployeesModule,
+    CrmCustomersModule,
+    CrmCompaniesModule,
+    CrmActivitiesModule,
+    CrmProjectsModule,
+    CrmProductsModule,
+    CrmDealsModule,
+    CrmProposalsModule,
+    CrmOrdersModule,
+    CrmProductionModule,
+    CrmTasksModule,
   ],
 })
 export class AppModule {}

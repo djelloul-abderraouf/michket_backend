@@ -35,3 +35,30 @@ export {
 export { idempotencyKeys } from './idempotency-keys';
 
 export { productReviews } from './product-reviews';
+
+// CRM Tables
+export {
+  crmUsers,
+  crmCompanies,
+  crmProjects,
+  crmContacts,
+  crmProducts,
+  crmDeals,
+  crmProposals,
+  crmOrders,
+  crmOrderStatusHistory,
+  crmProductionJobs,
+  crmTasks,
+  crmActivities,
+  crmLoginAudit,
+  crmOrderStatusEnum,
+  crmContactTypeEnum,
+  crmProductCategoryEnum,
+  crmDealStageEnum,
+  crmProposalStatusEnum,
+  crmProductionStatusEnum,
+  crmProjectStatusEnum,
+  crmActivityTypeEnum,
+  crmPriorityEnum,
+  crmConfirmationReasonEnum,
+} from './crm';
