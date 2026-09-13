@@ -232,8 +232,19 @@ export class CreateAdminProductDto {
   })
   slug!: string;
 
+  // Explicit catalogue path:
+  // categoryId -> root category (ex. Lampes 3D)
+  // subcategoryId -> level 2 (ex. Football)
+  // subsubcategoryId -> optional level 3 (ex. Real Madrid)
   @IsUUID()
   categoryId!: string;
+
+  @IsUUID()
+  subcategoryId!: string;
+
+  @IsOptional()
+  @IsUUID()
+  subsubcategoryId?: string | null;
 
   @IsOptional()
   @IsString()
@@ -331,6 +342,14 @@ export class UpdateAdminProductDto {
   @IsOptional()
   @IsUUID()
   categoryId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  subcategoryId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  subsubcategoryId?: string | null;
 
   @IsOptional()
   @IsString()

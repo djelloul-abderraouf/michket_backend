@@ -15,6 +15,7 @@ import {
   inArray,
   isNull,
   ne,
+  or,
   sql,
 } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -101,6 +102,8 @@ export type CreateAdminProductInput = {
   name: string;
   slug: string;
   categoryId: string;
+  subcategoryId: string;
+  subsubcategoryId?: string | null;
   description?: string;
   shortDescription?: string;
   priceCents: number;
@@ -122,6 +125,8 @@ export type UpdateAdminProductInput = {
   name?: string;
   slug?: string;
   categoryId?: string;
+  subcategoryId?: string;
+  subsubcategoryId?: string | null;
   description?: string | null;
   shortDescription?: string | null;
   priceCents?: number;
@@ -462,6 +467,15 @@ export class AdminService {
 
     if (
       input.parentId !== undefined &&
+      input.parentId !== existing.parentId
+    ) {
+      await this.assertCategorySubtreeCanMove(
+        categoryId,
+      );
+    }
+
+    if (
+      input.parentId !== undefined &&
       input.parentId !== null
     ) {
       await this.assertValidCategoryParent(
@@ -666,9 +680,19 @@ export class AdminService {
                 })
                 .from(products)
                 .where(
-                  eq(
-                    products.categoryId,
-                    categoryId,
+                  or(
+                    eq(
+                      products.categoryId,
+                      categoryId,
+                    ),
+                    eq(
+                      products.subcategoryId,
+                      categoryId,
+                    ),
+                    eq(
+                      products.subsubcategoryId,
+                      categoryId,
+                    ),
                   ),
                 ),
 
@@ -860,8 +884,11 @@ export class AdminService {
     input: CreateAdminProductInput,
   ) {
     this.validateProductPrices(input);
-    await this.assertCategoryExists(
+
+    await this.assertProductCategoryPath(
       input.categoryId,
+      input.subcategoryId,
+      input.subsubcategoryId ?? null,
     );
 
     const variants = input.variants ?? [];
@@ -900,6 +927,9 @@ export class AdminService {
             name: input.name.trim(),
             slug: input.slug.trim(),
             categoryId: input.categoryId,
+            subcategoryId: input.subcategoryId,
+            subsubcategoryId:
+              input.subsubcategoryId ?? null,
             description:
               input.description?.trim() || null,
             shortDescription:
@@ -1056,9 +1086,35 @@ export class AdminService {
       );
     }
 
-    if (input.categoryId) {
-      await this.assertCategoryExists(
-        input.categoryId,
+    const hierarchyChanged =
+      input.categoryId !== undefined ||
+      input.subcategoryId !== undefined ||
+      input.subsubcategoryId !== undefined;
+
+    if (hierarchyChanged) {
+      const effectiveCategoryId =
+        input.categoryId ??
+        existing.categoryId;
+
+      const effectiveSubcategoryId =
+        input.subcategoryId ??
+        existing.subcategoryId;
+
+      const effectiveSubsubcategoryId =
+        input.subsubcategoryId !== undefined
+          ? input.subsubcategoryId
+          : existing.subsubcategoryId;
+
+      if (!effectiveSubcategoryId) {
+        throw new BadRequestException(
+          'Product subcategory is required',
+        );
+      }
+
+      await this.assertProductCategoryPath(
+        effectiveCategoryId,
+        effectiveSubcategoryId,
+        effectiveSubsubcategoryId,
       );
     }
 
@@ -1089,6 +1145,18 @@ export class AdminService {
     if (input.categoryId !== undefined) {
       updateData.categoryId =
         input.categoryId;
+    }
+
+    if (input.subcategoryId !== undefined) {
+      updateData.subcategoryId =
+        input.subcategoryId;
+    }
+
+    if (
+      input.subsubcategoryId !== undefined
+    ) {
+      updateData.subsubcategoryId =
+        input.subsubcategoryId;
     }
 
     if (input.description !== undefined) {
@@ -3201,9 +3269,25 @@ export class AdminService {
       );
     }
 
+    /*
+     * The catalogue supports exactly three hierarchy levels:
+     *
+     * 1. Category
+     * 2. Subcategory
+     * 3. Sub-subcategory
+     *
+     * Validate both sides of a move:
+     * - the proposed parent's ancestor depth;
+     * - the height of the category subtree being moved.
+     *
+     * This prevents creating level 4 directly and also prevents moving
+     * an existing category with children to a position that would push
+     * one of its descendants to level 4.
+     */
     let currentId: string | null =
       parentId;
     const visited = new Set<string>();
+    let parentDepth = 0;
 
     while (currentId) {
       if (visited.has(currentId)) {
@@ -3247,7 +3331,76 @@ export class AdminService {
         );
       }
 
+      parentDepth += 1;
+
+      if (parentDepth >= 3) {
+        throw new BadRequestException(
+          'Category hierarchy supports a maximum of 3 levels',
+        );
+      }
+
       currentId = current.parentId;
+    }
+
+    const newCategoryDepth =
+      parentDepth + 1;
+
+    if (!categoryId) {
+      return;
+    }
+
+    /*
+     * When moving an existing category, its descendants move with it.
+     * Count every descendant level, including inactive categories, so
+     * the database can never contain a hidden level 4 that could later
+     * become active.
+     */
+    let frontier = [categoryId];
+    const descendantsVisited =
+      new Set<string>([categoryId]);
+    let descendantDepth = 0;
+
+    while (frontier.length > 0) {
+      const children = await this.db
+        .select({
+          id: categories.id,
+        })
+        .from(categories)
+        .where(
+          inArray(
+            categories.parentId,
+            frontier,
+          ),
+        );
+
+      const nextFrontier = children
+        .map((child) => child.id)
+        .filter(
+          (id) =>
+            !descendantsVisited.has(id),
+        );
+
+      if (nextFrontier.length === 0) {
+        break;
+      }
+
+      descendantDepth += 1;
+
+      if (
+        newCategoryDepth +
+          descendantDepth >
+        3
+      ) {
+        throw new BadRequestException(
+          'Category hierarchy supports a maximum of 3 levels',
+        );
+      }
+
+      for (const id of nextFrontier) {
+        descendantsVisited.add(id);
+      }
+
+      frontier = nextFrontier;
     }
   }
 
@@ -3263,9 +3416,19 @@ export class AdminService {
           .from(products)
           .where(
             and(
-              eq(
-                products.categoryId,
-                categoryId,
+              or(
+                eq(
+                  products.categoryId,
+                  categoryId,
+                ),
+                eq(
+                  products.subcategoryId,
+                  categoryId,
+                ),
+                eq(
+                  products.subsubcategoryId,
+                  categoryId,
+                ),
               ),
               eq(
                 products.isActive,
@@ -3530,29 +3693,152 @@ export class AdminService {
     );
   }
 
-  private async assertCategoryExists(
+  private async assertProductCategoryPath(
     categoryId: string,
+    subcategoryId: string,
+    subsubcategoryId: string | null,
   ): Promise<void> {
-    const [category] = await this.db
-      .select({ id: categories.id })
+    const categoryIds = Array.from(
+      new Set(
+        [
+          categoryId,
+          subcategoryId,
+          subsubcategoryId,
+        ].filter(
+          (id): id is string =>
+            Boolean(id),
+        ),
+      ),
+    );
+
+    const rows = await this.db
+      .select({
+        id: categories.id,
+        parentId: categories.parentId,
+        isActive: categories.isActive,
+      })
       .from(categories)
       .where(
-        and(
-          eq(
-            categories.id,
-            categoryId,
+        inArray(
+          categories.id,
+          categoryIds,
+        ),
+      );
+
+    const byId = new Map(
+      rows.map((category) => [
+        category.id,
+        category,
+      ]),
+    );
+
+    const category =
+      byId.get(categoryId);
+
+    if (
+      !category ||
+      !category.isActive ||
+      category.parentId !== null
+    ) {
+      throw new BadRequestException(
+        'Product category must be an active top-level category',
+      );
+    }
+
+    const subcategory =
+      byId.get(subcategoryId);
+
+    if (
+      !subcategory ||
+      !subcategory.isActive ||
+      subcategory.parentId !==
+        category.id
+    ) {
+      throw new BadRequestException(
+        'Product subcategory must be an active direct child of the selected category',
+      );
+    }
+
+    if (!subsubcategoryId) {
+      return;
+    }
+
+    const subsubcategory =
+      byId.get(subsubcategoryId);
+
+    if (
+      !subsubcategory ||
+      !subsubcategory.isActive ||
+      subsubcategory.parentId !==
+        subcategory.id
+    ) {
+      throw new BadRequestException(
+        'Product sub-subcategory must be an active direct child of the selected subcategory',
+      );
+    }
+  }
+
+  private async assertCategorySubtreeCanMove(
+    categoryId: string,
+  ): Promise<void> {
+    const subtreeIds = [categoryId];
+    const visited =
+      new Set<string>([categoryId]);
+    let frontier = [categoryId];
+
+    while (frontier.length > 0) {
+      const children = await this.db
+        .select({
+          id: categories.id,
+        })
+        .from(categories)
+        .where(
+          inArray(
+            categories.parentId,
+            frontier,
           ),
-          eq(
-            categories.isActive,
-            true,
+        );
+
+      const nextFrontier = children
+        .map((child) => child.id)
+        .filter(
+          (id) =>
+            !visited.has(id),
+        );
+
+      for (const id of nextFrontier) {
+        visited.add(id);
+        subtreeIds.push(id);
+      }
+
+      frontier = nextFrontier;
+    }
+
+    const [usage] = await this.db
+      .select({
+        count: sql<number>`count(*)::int`,
+      })
+      .from(products)
+      .where(
+        or(
+          inArray(
+            products.categoryId,
+            subtreeIds,
+          ),
+          inArray(
+            products.subcategoryId,
+            subtreeIds,
+          ),
+          inArray(
+            products.subsubcategoryId,
+            subtreeIds,
           ),
         ),
-      )
-      .limit(1);
+      );
 
-    if (!category) {
-      throw new BadRequestException(
-        'Category does not exist or is inactive',
+    if ((usage?.count ?? 0) > 0) {
+      throw new ConflictException(
+        'Category hierarchy cannot be moved while products use this category or one of its descendants',
       );
     }
   }

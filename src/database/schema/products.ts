@@ -33,8 +33,24 @@ export const products = pgTable(
     description: text('description'),
     shortDescription: text('short_description'),
 
+    /*
+     * Transitional explicit hierarchy.
+     *
+     * During the migration phase, categoryId keeps its current legacy
+     * meaning so the deployed code continues to work.
+     *
+     * The two new fields are nullable temporarily. Once backend/frontend
+     * are migrated and existing products are backfilled, subcategoryId
+     * will become NOT NULL and categoryId will represent the root category.
+     */
     categoryId: uuid('category_id')
       .notNull()
+      .references(() => categories.id),
+
+    subcategoryId: uuid('subcategory_id')
+      .references(() => categories.id),
+
+    subsubcategoryId: uuid('subsubcategory_id')
       .references(() => categories.id),
 
     priceCents: integer('price_cents').notNull(),
@@ -67,13 +83,30 @@ export const products = pgTable(
   },
   (table) => [
     index('products_category_idx').on(table.categoryId),
+    index('products_subcategory_idx').on(table.subcategoryId),
+    index('products_subsubcategory_idx').on(table.subsubcategoryId),
+
+    index('products_category_subcategory_idx').on(
+      table.categoryId,
+      table.subcategoryId,
+    ),
+
+    index('products_category_subcategory_subsubcategory_idx').on(
+      table.categoryId,
+      table.subcategoryId,
+      table.subsubcategoryId,
+    ),
+
     index('products_active_idx').on(table.isActive),
     check('products_price_nonnegative', sql`${table.priceCents} >= 0`),
     check(
       'products_compare_price_nonnegative',
       sql`${table.compareAtPriceCents} IS NULL OR ${table.compareAtPriceCents} >= 0`,
     ),
-    check('products_rating_count_nonnegative', sql`${table.ratingCount} >= 0`),
+    check(
+      'products_rating_count_nonnegative',
+      sql`${table.ratingCount} >= 0`,
+    ),
   ],
 );
 
