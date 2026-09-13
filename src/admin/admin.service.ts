@@ -72,10 +72,11 @@ type ProductImageInput = {
 
 type ProductVariantInput = {
   name: string;
-  sku?: string;
-  colorName?: string;
-  colorHex?: string;
-  priceCents?: number;
+  sku?: string | null;
+  colorName?: string | null;
+  colorHex?: string | null;
+  isMulticolor?: boolean;
+  priceCents?: number | null;
   options?: Record<string, unknown>;
   sortOrder?: number;
   isActive?: boolean;
@@ -993,8 +994,12 @@ export class AdminService {
                 variantInput.colorName?.trim() ||
                 null,
               colorHex:
-                variantInput.colorHex?.trim() ||
-                null,
+                variantInput.isMulticolor
+                  ? null
+                  : variantInput.colorHex?.trim() ||
+                    null,
+              isMulticolor:
+                variantInput.isMulticolor ?? false,
               priceCents:
                 variantInput.priceCents ?? null,
               options:
@@ -2208,8 +2213,12 @@ export class AdminService {
                 input.colorName?.trim() ||
                 null,
               colorHex:
-                input.colorHex?.trim() ||
-                null,
+                input.isMulticolor
+                  ? null
+                  : input.colorHex?.trim() ||
+                    null,
+              isMulticolor:
+                input.isMulticolor ?? false,
               priceCents:
                 input.priceCents ?? null,
               options:
@@ -2418,7 +2427,7 @@ export class AdminService {
 
           if (input.sku !== undefined) {
             updateData.sku =
-              input.sku.trim() ||
+              input.sku?.trim() ||
               null;
           }
 
@@ -2427,16 +2436,30 @@ export class AdminService {
             undefined
           ) {
             updateData.colorName =
-              input.colorName.trim() ||
+              input.colorName?.trim() ||
               null;
           }
 
+          const effectiveIsMulticolor =
+            input.isMulticolor ??
+            variant.isMulticolor;
+
           if (
+            input.isMulticolor !==
+            undefined
+          ) {
+            updateData.isMulticolor =
+              input.isMulticolor;
+          }
+
+          if (effectiveIsMulticolor) {
+            updateData.colorHex = null;
+          } else if (
             input.colorHex !==
             undefined
           ) {
             updateData.colorHex =
-              input.colorHex.trim() ||
+              input.colorHex?.trim() ||
               null;
           }
 
@@ -4000,7 +4023,7 @@ export class AdminService {
     }
 
     if (
-      variant.priceCents !== undefined &&
+      variant.priceCents != null &&
       (
         !Number.isInteger(
           variant.priceCents,

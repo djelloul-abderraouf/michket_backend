@@ -171,6 +171,7 @@ export const productVariants = pgTable(
     sku: text('sku').unique(),
     colorName: text('color_name'),
     colorHex: text('color_hex'),
+    isMulticolor: boolean('is_multicolor').notNull().default(false),
     priceCents: integer('price_cents'),
     options: jsonb('options'),
     sortOrder: integer('sort_order').notNull().default(0),

@@ -174,7 +174,7 @@ export class AdminProductVariantDto {
   @IsOptional()
   @IsString()
   @MaxLength(100)
-  colorName?: string;
+  colorName?: string | null;
 
   @IsOptional()
   @IsString()
@@ -182,13 +182,17 @@ export class AdminProductVariantDto {
     message:
       'colorHex must be a 6-digit hex color like #FFAA00',
   })
-  colorHex?: string;
+  colorHex?: string | null;
+
+  @IsOptional()
+  @IsBoolean()
+  isMulticolor?: boolean;
 
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  priceCents?: number;
+  priceCents?: number | null;
 
   @IsOptional()
   @IsObject()

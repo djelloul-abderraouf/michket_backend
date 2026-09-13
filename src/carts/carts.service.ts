@@ -414,6 +414,8 @@ export class CartsService {
           sku: productVariants.sku,
           colorName: productVariants.colorName,
           colorHex: productVariants.colorHex,
+          isMulticolor: productVariants.isMulticolor,
+          priceCents: productVariants.priceCents,
         },
         product: {
           id: products.id,
@@ -534,8 +536,20 @@ export class CartsService {
         generalImages[0] ??
         null;
 
+      const authoritativeUnitPriceCents =
+        item.variant?.priceCents ??
+        item.product.priceCents;
+
       return {
         ...item,
+        unitPriceCents:
+          authoritativeUnitPriceCents,
+        selectedColorName:
+          item.variant?.colorName ??
+          item.selectedColorName,
+        selectedColorHex:
+          item.variant?.colorHex ??
+          item.selectedColorHex,
         product: {
           ...item.product,
           imageUrl: selectedImage?.url ?? null,
