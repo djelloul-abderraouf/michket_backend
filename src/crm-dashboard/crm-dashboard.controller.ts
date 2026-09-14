@@ -32,13 +32,7 @@ export class CrmDashboardController {
     return this.crmDashboardService.getSummary();
   }
 
-  @Get('orders')
-  @ApiOperation({ summary: 'Get order statistics' })
-  @ApiResponse({ status: 200, description: 'Returns order statistics' })
-  @CrmRoles('admin', 'commercial', 'fabrication', 'preparation', 'livraison')
-  async getOrderStatistics() {
-    return this.crmDashboardService.getOrderStatistics();
-  }
+
 
   @Get('deals')
   @ApiOperation({ summary: 'Get deal statistics' })

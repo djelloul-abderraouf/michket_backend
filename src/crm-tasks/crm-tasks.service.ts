@@ -10,6 +10,7 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import * as schema from '../database/schema';
 import { crmTasks } from '../database/schema';
+import { users } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { CrmBaseService } from '../crm-base/crm-base.service';
 import {
@@ -27,11 +28,11 @@ export class CrmTasksService extends CrmBaseService {
   }
 
   async findAll() {
-    return this.findAll(crmTasks);
+    return this.findAllEntities(crmTasks);
   }
 
   async findById(id: string) {
-    return this.findById(crmTasks, id, 'Task');
+    return this.findEntityById(crmTasks, id, 'Task');
   }
 
   async create(dto: CreateCrmTaskDto) {
@@ -70,7 +71,7 @@ export class CrmTasksService extends CrmBaseService {
 
   async delete(id: string) {
     await this.findById(id);
-    await this.deleteById(crmTasks, id);
+    await this.deleteEntityById(crmTasks, id);
   }
 
   async findByAssignee(assigneeId: string) {

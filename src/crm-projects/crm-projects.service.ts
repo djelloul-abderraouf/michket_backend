@@ -27,11 +27,11 @@ export class CrmProjectsService extends CrmBaseService {
   }
 
   async findAll() {
-    return this.findAll(crmProjects);
+    return this.findAllEntities(crmProjects);
   }
 
   async findById(id: string) {
-    return this.findById(crmProjects, id, 'Project');
+    return this.findEntityById(crmProjects, id, 'Project');
   }
 
   async create(dto: CreateCrmProjectDto) {
@@ -64,7 +64,7 @@ export class CrmProjectsService extends CrmBaseService {
 
   async delete(id: string) {
     await this.findById(id);
-    await this.deleteById(crmProjects, id);
+    await this.deleteEntityById(crmProjects, id);
   }
 
   async findByStatus(status: 'actif' | 'termine') {

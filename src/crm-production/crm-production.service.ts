@@ -27,11 +27,11 @@ export class CrmProductionService extends CrmBaseService {
   }
 
   async findAll() {
-    return this.findAll(crmProductionJobs);
+    return this.findAllEntities(crmProductionJobs);
   }
 
   async findById(id: string) {
-    return this.findById(crmProductionJobs, id, 'Production Job');
+    return this.findEntityById(crmProductionJobs, id, 'Production Job');
   }
 
   async create(dto: CreateCrmProductionJobDto) {
@@ -51,7 +51,7 @@ export class CrmProductionService extends CrmBaseService {
   }
 
   async update(id: string, dto: UpdateCrmProductionJobDto) {
-    const job = await this.findById(id);
+    const job = await this.findById(id) as any;
 
     const updateData: any = {
       ...dto,
@@ -78,7 +78,7 @@ export class CrmProductionService extends CrmBaseService {
 
   async delete(id: string) {
     await this.findById(id);
-    await this.deleteById(crmProductionJobs, id);
+    await this.deleteEntityById(crmProductionJobs, id);
   }
 
   async findByOrder(orderId: string) {

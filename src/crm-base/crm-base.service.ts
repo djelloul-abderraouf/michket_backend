@@ -19,7 +19,7 @@ export class CrmBaseService {
     protected readonly db: NodePgDatabase<typeof schema>,
   ) {}
 
-  protected async findById<T>(
+  protected async findEntityById<T>(
     table: any,
     id: string,
     tableName: string,
@@ -37,17 +37,17 @@ export class CrmBaseService {
     return item as T;
   }
 
-  protected async findAll<T>(
+  protected async findAllEntities<T>(
     table: any,
     orderByField: string = 'createdAt',
   ): Promise<T[]> {
     return this.db
       .select()
       .from(table)
-      .orderBy(desc(table[orderByField]));
+      .orderBy(desc(table[orderByField])) as unknown as T[];
   }
 
-  protected async deleteById(
+  protected async deleteEntityById(
     table: any,
     id: string,
   ): Promise<void> {

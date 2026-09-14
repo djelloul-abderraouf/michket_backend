@@ -11,7 +11,7 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import * as schema from '../database/schema';
 import {
-  crmOrders,
+  orders,
   crmDeals,
   crmTasks,
   crmProductionJobs,
@@ -32,20 +32,20 @@ export class CrmDashboardService extends CrmBaseService {
   async getSummary() {
     const [ordersByStatus] = await this.db
       .select({
-        status: crmOrders.status,
+        status: orders.status,
         count: sql<number>`count(*)::int`,
       })
-      .from(crmOrders)
-      .groupBy(crmOrders.status);
+      .from(orders)
+      .groupBy(orders.status);
 
     const [totalRevenue] = await this.db
       .select({
-        total: sql<number>`coalesce(sum(total), 0)::int`,
+        total: sql<number>`coalesce(sum(total_cents), 0)::int`,
       })
-      .from(crmOrders)
+      .from(orders)
       .where(
         and(
-          eq(crmOrders.status, 'livre'),
+          eq(orders.status, 'delivered'),
         ),
       );
 
@@ -83,19 +83,6 @@ export class CrmDashboardService extends CrmBaseService {
       activeProductionJobs: activeProductionJobs?.count ?? 0,
       recentActivities,
     };
-  }
-
-  async getOrderStatistics() {
-    const [ordersByStatus] = await this.db
-      .select({
-        status: crmOrders.status,
-        count: sql<number>`count(*)::int`,
-        total: sql<number>`coalesce(sum(total), 0)::int`,
-      })
-      .from(crmOrders)
-      .groupBy(crmOrders.status);
-
-    return ordersByStatus;
   }
 
   async getDealStatistics() {

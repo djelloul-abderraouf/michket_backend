@@ -27,11 +27,11 @@ export class CrmDealsService extends CrmBaseService {
   }
 
   async findAll() {
-    return this.findAll(crmDeals);
+    return this.findAllEntities(crmDeals);
   }
 
   async findById(id: string) {
-    return this.findById(crmDeals, id, 'Deal');
+    return this.findEntityById(crmDeals, id, 'Deal');
   }
 
   async create(dto: CreateCrmDealDto) {
@@ -42,7 +42,7 @@ export class CrmDealsService extends CrmBaseService {
         title: dto.title,
         contactId: dto.contactId,
         companyId: dto.companyId,
-        estimatedAmount: dto.estimatedAmount,
+        estimatedAmount: dto.estimatedAmount.toString(),
         stage: dto.stage,
         ownerId: dto.ownerId,
         expectedCloseAt: dto.expectedCloseAt ? new Date(dto.expectedCloseAt) : null,
@@ -59,6 +59,7 @@ export class CrmDealsService extends CrmBaseService {
       .update(crmDeals)
       .set({
         ...dto,
+        estimatedAmount: dto.estimatedAmount?.toString(),
         expectedCloseAt: dto.expectedCloseAt ? new Date(dto.expectedCloseAt) : undefined,
         updatedAt: new Date(),
       })
@@ -70,7 +71,7 @@ export class CrmDealsService extends CrmBaseService {
 
   async delete(id: string) {
     await this.findById(id);
-    await this.deleteById(crmDeals, id);
+    await this.deleteEntityById(crmDeals, id);
   }
 
   async findByOwner(ownerId: string) {

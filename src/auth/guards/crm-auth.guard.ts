@@ -10,6 +10,17 @@ import { Request } from 'express';
 
 import { AuthService } from '../auth.service';
 
+interface CrmRequest extends Request {
+  crmUser?: {
+    id: string;
+    email: string;
+    firstName?: string;
+    lastName?: string;
+    role: 'customer' | 'admin' | 'super_admin';
+    roles: string[];
+  };
+}
+
 @Injectable()
 export class CrmAuthGuard implements CanActivate {
   constructor(
@@ -19,7 +30,7 @@ export class CrmAuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest<Request>();
+    const request = context.switchToHttp().getRequest<CrmRequest>();
     const token = this.extractTokenFromHeader(request);
 
     if (!token) {
@@ -38,7 +49,7 @@ export class CrmAuthGuard implements CanActivate {
       }
 
       // Attach CRM user to request
-      request['crmUser'] = crmUser;
+      request.crmUser = crmUser;
       return true;
     } catch (error) {
       throw new UnauthorizedException('Invalid CRM authentication');

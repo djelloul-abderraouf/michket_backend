@@ -9,27 +9,14 @@ import {
   pgEnum,
 } from 'drizzle-orm/pg-core';
 
+import { users } from './users';
+import { orders } from './orders';
+
 // Enums
-export const crmOrderStatusEnum = pgEnum('crm_order_status', [
-  'pas_confirme',
-  'confirme',
-  'en_fabrication',
-  'en_preparation',
-  'en_livraison',
-  'livre',
-  'retour_echec',
-]);
 
 export const crmContactTypeEnum = pgEnum('crm_contact_type', [
   'particulier',
   'professionnel',
-]);
-
-export const crmProductCategoryEnum = pgEnum('crm_product_category', [
-  'lampe',
-  'trophee',
-  'carte',
-  'neon',
 ]);
 
 export const crmDealStageEnum = pgEnum('crm_deal_stage', [
@@ -72,24 +59,7 @@ export const crmPriorityEnum = pgEnum('crm_priority', [
   'urgente',
 ]);
 
-export const crmConfirmationReasonEnum = pgEnum('crm_confirmation_reason', [
-  'injoignable',
-  'refus',
-  'a_rappeler',
-]);
-
 // Tables
-export const crmUsers = pgTable('crm_users', {
-  id: text('id').primaryKey(),
-  name: text('name').notNull(),
-  email: text('email').notNull().unique(),
-  roles: text('roles').array().notNull(),
-  active: boolean('active').notNull().default(true),
-  lastLoginAt: timestamp('last_login_at').notNull(),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow(),
-});
-
 export const crmCompanies = pgTable('crm_companies', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
@@ -120,18 +90,6 @@ export const crmContacts = pgTable('crm_contacts', {
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });
 
-export const crmProducts = pgTable('crm_products', {
-  id: text('id').primaryKey(),
-  name: text('name').notNull(),
-  category: crmProductCategoryEnum('category').notNull(),
-  price: numeric('price').notNull(),
-  photoUrl: text('photo_url').notNull(),
-  averageBuildHours: numeric('average_build_hours').notNull(),
-  active: boolean('active').notNull().default(true),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow(),
-});
-
 export const crmDeals = pgTable('crm_deals', {
   id: text('id').primaryKey(),
   title: text('title').notNull(),
@@ -139,7 +97,7 @@ export const crmDeals = pgTable('crm_deals', {
   companyId: text('company_id').references(() => crmCompanies.id),
   estimatedAmount: numeric('estimated_amount').notNull(),
   stage: crmDealStageEnum('stage').notNull(),
-  ownerId: text('owner_id').notNull().references(() => crmUsers.id),
+  ownerId: text('owner_id').notNull().references(() => users.id),
   expectedCloseAt: timestamp('expected_close_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
@@ -155,40 +113,9 @@ export const crmProposals = pgTable('crm_proposals', {
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });
 
-export const crmOrders = pgTable('crm_orders', {
-  id: text('id').primaryKey(),
-  source: text('source').notNull(), // 'directe' | 'affaire'
-  clientName: text('client_name').notNull(),
-  phone: text('phone').notNull(),
-  wilaya: text('wilaya').notNull(),
-  status: crmOrderStatusEnum('status').notNull(),
-  items: jsonb('items').notNull(),
-  total: numeric('total').notNull(),
-  notes: text('notes'),
-  confirmationReason: crmConfirmationReasonEnum('confirmation_reason'),
-  reminderAt: timestamp('reminder_at'),
-  trackingNumber: text('tracking_number'),
-  carrierStatus: text('carrier_status'),
-  deliveredAt: timestamp('delivered_at'),
-  shippedAt: timestamp('shipped_at'),
-  returnReason: text('return_reason'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow(),
-});
-
-export const crmOrderStatusHistory = pgTable('crm_order_status_history', {
-  id: text('id').primaryKey(),
-  orderId: text('order_id').notNull().references(() => crmOrders.id),
-  fromStatus: text('from_status'),
-  toStatus: text('to_status').notNull(),
-  authorId: text('author_id').notNull().references(() => crmUsers.id),
-  note: text('note'),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-});
-
 export const crmProductionJobs = pgTable('crm_production_jobs', {
   id: text('id').primaryKey(),
-  orderId: text('order_id').notNull().references(() => crmOrders.id),
+  orderId: text('order_id').notNull().references(() => orders.id),
   orderRef: text('order_ref').notNull(),
   clientName: text('client_name').notNull(),
   productSummary: text('product_summary').notNull(),
@@ -202,7 +129,7 @@ export const crmProductionJobs = pgTable('crm_production_jobs', {
 export const crmTasks = pgTable('crm_tasks', {
   id: text('id').primaryKey(),
   title: text('title').notNull(),
-  assigneeId: text('assignee_id').notNull().references(() => crmUsers.id),
+  assigneeId: text('assignee_id').notNull().references(() => users.id),
   assigneeName: text('assignee_name').notNull(),
   projectId: text('project_id').references(() => crmProjects.id),
   dueAt: timestamp('due_at').notNull(),
@@ -216,7 +143,7 @@ export const crmActivities = pgTable('crm_activities', {
   id: text('id').primaryKey(),
   type: crmActivityTypeEnum('type').notNull(),
   target: text('target').notNull(),
-  ownerId: text('owner_id').notNull().references(() => crmUsers.id),
+  ownerId: text('owner_id').notNull().references(() => users.id),
   description: text('description').notNull(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });

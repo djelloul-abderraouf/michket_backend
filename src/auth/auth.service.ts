@@ -7,7 +7,7 @@ import { eq } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import * as schema from '../database/schema';
-import { users, crmUsers } from '../database/schema';
+import { users } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 
 @Injectable()
@@ -76,7 +76,7 @@ export class AuthService {
 
   /**
    * Validate CRM user for CRM-specific operations.
-   * This handles the CRM user management system.
+   * Uses the existing users table with role-based access control.
    */
   async validateCrmUser(supabaseUser: {
     id: string;
@@ -84,34 +84,39 @@ export class AuthService {
   }): Promise<{
     id: string;
     email: string;
-    name: string;
+    firstName?: string;
+    lastName?: string;
+    role: 'customer' | 'admin' | 'super_admin';
     roles: string[];
-    active: boolean;
   } | null> {
-    const [crmUser] = await this.db
+    const [user] = await this.db
       .select()
-      .from(crmUsers)
-      .where(eq(crmUsers.email, supabaseUser.email))
+      .from(users)
+      .where(eq(users.id, supabaseUser.id))
       .limit(1);
 
-    if (!crmUser || !crmUser.active) {
+    if (!user || !user.isActive) {
       return null;
     }
 
-    // Update last login time
-    await this.db
-      .update(crmUsers)
-      .set({
-        lastLoginAt: new Date(),
-      })
-      .where(eq(crmUsers.id, crmUser.id));
+    // Only admin and super_admin have CRM access
+    if (user.role === 'customer') {
+      return null;
+    }
+
+    // Map user roles to CRM roles
+    const roleMapping: Record<string, string[]> = {
+      admin: ['admin', 'commercial', 'fabrication', 'preparation', 'livraison'],
+      super_admin: ['admin', 'commercial', 'fabrication', 'preparation', 'livraison', 'confirmation'],
+    };
 
     return {
-      id: crmUser.id,
-      email: crmUser.email,
-      name: crmUser.name,
-      roles: crmUser.roles,
-      active: crmUser.active,
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName ?? undefined,
+      lastName: user.lastName ?? undefined,
+      role: user.role,
+      roles: roleMapping[user.role] || [],
     };
   }
 }
