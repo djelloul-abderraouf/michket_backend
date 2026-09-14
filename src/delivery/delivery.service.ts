@@ -105,6 +105,7 @@ const WILAYAS = [
   { code: 58, name: 'El Meniaa' },
 ] as const;
 
+// Yalidine Stop Desk compatibility update: supports multiple fee field names.
 const LOCATION_CACHE_TTL_MS = 60 * 60 * 1000;
 const FEES_CACHE_TTL_MS = 10 * 60 * 1000;
 const PAGE_SIZE = 100;
@@ -215,42 +216,34 @@ export class DeliveryService {
       fromWilayaCode,
       toWilayaCode,
     );
-    console.log(
-  "YALIDINE FEES RESPONSE:",
-  JSON.stringify(fees, null, 2),
-);
 
-    const communeFee =
-      this.findCommuneFee(fees, communeId);
-
-    if (!communeFee) {
-      throw new ServiceUnavailableException(
-        'Yalidine did not return a delivery fee for the selected commune',
-      );
-    }
-
-    const amountDa =
+    const rateKeys =
       deliveryType === 'office'
-        ? this.readFirstNumber(
-            communeFee,
-            [
-              'express_stopdesk',
-              'express_stop_desk',
-              'expressStopDesk',
-              'stopdesk',
-              'stop_desk',
-              'office',
-            ],
-          )
-        : this.readFirstNumber(
-            communeFee,
-            [
-              'express_home',
-              'expressHome',
-              'home',
-              'home_delivery',
-            ],
-          );
+        ? [
+            'express_stopdesk',
+            'express_stop_desk',
+            'expressStopDesk',
+            'express_stopdesk_price',
+            'stopdesk',
+            'stop_desk',
+            'stopDesk',
+            'stop_desk_price',
+            'office',
+            'office_delivery',
+            'desk',
+          ]
+        : [
+            'express_home',
+            'expressHome',
+            'home',
+            'home_delivery',
+          ];
+
+    const amountDa = this.findCommuneFeeAmount(
+      fees,
+      communeId,
+      rateKeys,
+    );
 
     if (
       amountDa == null ||
@@ -798,20 +791,93 @@ export class DeliveryService {
   }
 
   /**
-   * Yalidine fee responses are nested by commune. Their public integrations
-   * expose commune_id + express_home/express_stopdesk, but this recursive
-   * lookup deliberately tolerates array/object wrappers and maps keyed by
-   * commune id so minor response-envelope changes do not break checkout.
+   * Find one exact Yalidine rate for one commune.
+   *
+   * Important: do NOT first select a generic "commune fee object" based on
+   * any recognised price. A Yalidine response can wrap home and stop-desk
+   * prices at different nesting levels. The previous implementation could
+   * therefore stop on a home-only node and never reach express_stopdesk.
+   *
+   * We now search specifically for the requested rate keys, but only inside
+   * the branch that belongs to the requested commune.
    */
-  private findCommuneFee(
+  private findCommuneFeeAmount(
     payload: unknown,
     communeId: number,
-  ): Record<string, unknown> | null {
+    rateKeys: string[],
+  ): number | null {
     const visited = new Set<object>();
 
-    const visit = (
+    const findRateDeep = (
       value: unknown,
-    ): Record<string, unknown> | null => {
+      rateVisited = new Set<object>(),
+    ): number | null => {
+      if (
+        value === null ||
+        value === undefined
+      ) {
+        return null;
+      }
+
+      if (Array.isArray(value)) {
+        if (rateVisited.has(value)) {
+          return null;
+        }
+
+        rateVisited.add(value);
+
+        for (const item of value) {
+          const found = findRateDeep(
+            item,
+            rateVisited,
+          );
+
+          if (found != null) {
+            return found;
+          }
+        }
+
+        return null;
+      }
+
+      const record = this.asRecord(value);
+
+      if (!record) {
+        return null;
+      }
+
+      if (rateVisited.has(record)) {
+        return null;
+      }
+
+      rateVisited.add(record);
+
+      const direct = this.readFirstNumber(
+        record,
+        rateKeys,
+      );
+
+      if (direct != null) {
+        return direct;
+      }
+
+      for (const nested of Object.values(
+        record,
+      )) {
+        const found = findRateDeep(
+          nested,
+          rateVisited,
+        );
+
+        if (found != null) {
+          return found;
+        }
+      }
+
+      return null;
+    };
+
+    const visit = (value: unknown): number | null => {
       if (
         value === null ||
         value === undefined
@@ -829,7 +895,7 @@ export class DeliveryService {
         for (const item of value) {
           const found = visit(item);
 
-          if (found) {
+          if (found != null) {
             return found;
           }
         }
@@ -849,32 +915,34 @@ export class DeliveryService {
 
       visited.add(record);
 
-      const directById =
+      // Common Yalidine shape: the commune id itself is an object key.
+      const keyedCommune =
         record[String(communeId)];
 
-      const directRecord =
-        this.asRecord(directById);
+      if (keyedCommune !== undefined) {
+        const found = findRateDeep(
+          keyedCommune,
+        );
 
-      if (
-        directRecord &&
-        this.hasRecognizedFee(
-          directRecord,
-        )
-      ) {
-        return directRecord;
+        if (found != null) {
+          return found;
+        }
       }
 
+      // Other Yalidine shape: each commune row contains commune_id.
       const recordCommuneId =
         this.readFirstInteger(record, [
           'commune_id',
           'communeId',
+          'id',
         ]);
 
-      if (
-        recordCommuneId === communeId &&
-        this.hasRecognizedFee(record)
-      ) {
-        return record;
+      if (recordCommuneId === communeId) {
+        const found = findRateDeep(record);
+
+        if (found != null) {
+          return found;
+        }
       }
 
       for (const nested of Object.values(
@@ -882,7 +950,7 @@ export class DeliveryService {
       )) {
         const found = visit(nested);
 
-        if (found) {
+        if (found != null) {
           return found;
         }
       }
@@ -891,25 +959,6 @@ export class DeliveryService {
     };
 
     return visit(payload);
-  }
-
-  private hasRecognizedFee(
-    record: Record<string, unknown>,
-  ) {
-    return (
-      this.readFirstNumber(record, [
-        'express_home',
-        'expressHome',
-        'home',
-        'home_delivery',
-        'express_stopdesk',
-        'express_stop_desk',
-        'expressStopDesk',
-        'stopdesk',
-        'stop_desk',
-        'office',
-      ]) != null
-    );
   }
 
   private extractCollection(
