@@ -485,10 +485,15 @@ export class AdminService {
       );
     }
 
+    let categorySubtreeToDeactivate:
+      | string[]
+      | null = null;
+
     if (input.isActive === false) {
-      await this.assertCategoryCanBeDeactivated(
-        categoryId,
-      );
+      categorySubtreeToDeactivate =
+        await this.assertCategoryCanBeDeactivated(
+          categoryId,
+        );
     }
 
     if (input.isActive === true) {
@@ -592,39 +597,108 @@ export class AdminService {
       newImageStoragePath !== oldImageStoragePath;
 
     try {
-      const [updated] = await this.db
-        .update(categories)
-        .set(updateData)
-        .where(eq(categories.id, categoryId))
-        .returning();
+      const updated =
+        await this.db.transaction(
+          async (tx) => {
+            const [updatedCategory] =
+              await tx
+                .update(categories)
+                .set(updateData)
+                .where(
+                  eq(
+                    categories.id,
+                    categoryId,
+                  ),
+                )
+                .returning();
 
-      // After successful DB update, clean up old Storage file
-      if (imageChanged && oldImageStoragePath) {
+            if (!updatedCategory) {
+              throw new NotFoundException(
+                'Catégorie introuvable.',
+              );
+            }
+
+            /*
+             * Deactivating a parent category also deactivates every
+             * descendant in the same branch. Child categories are no
+             * longer a blocker.
+             *
+             * Active products remain a blocker (validated above) so an
+             * active product can never silently stay published inside an
+             * inactive category branch.
+             */
+            if (
+              input.isActive === false &&
+              categorySubtreeToDeactivate
+            ) {
+              const descendantIds =
+                categorySubtreeToDeactivate.filter(
+                  (id) =>
+                    id !== categoryId,
+                );
+
+              if (
+                descendantIds.length > 0
+              ) {
+                await tx
+                  .update(categories)
+                  .set({
+                    isActive: false,
+                    updatedAt:
+                      new Date(),
+                  })
+                  .where(
+                    inArray(
+                      categories.id,
+                      descendantIds,
+                    ),
+                  );
+              }
+            }
+
+            return updatedCategory;
+          },
+        );
+
+      // After successful DB transaction, clean up old Storage file.
+      if (
+        imageChanged &&
+        oldImageStoragePath
+      ) {
         try {
-          await this.mediaService.delete(oldImageStoragePath);
+          await this.mediaService.delete(
+            oldImageStoragePath,
+          );
         } catch (error) {
-          // Log but don't throw — DB update succeeded
+          // Log but don't throw — DB update succeeded.
           this.logger.warn(
             `Failed to delete old category image from storage: ${oldImageStoragePath}`,
-            error instanceof Error ? error.message : String(error),
+            error instanceof Error
+              ? error.message
+              : String(error),
           );
         }
       }
 
       return updated;
     } catch (error) {
-      // If DB update fails and a new image was uploaded, clean up the orphan
-      if (imageChanged && newImageStoragePath) {
+      // If DB update fails and a new image was uploaded, clean up the orphan.
+      if (
+        imageChanged &&
+        newImageStoragePath
+      ) {
         try {
-          await this.mediaService.delete(newImageStoragePath);
+          await this.mediaService.delete(
+            newImageStoragePath,
+          );
         } catch {
-          // Best-effort cleanup
+          // Best-effort cleanup.
         }
       }
 
       if (this.isUniqueViolation(error)) {
         throw new ConflictException(
-          'Category slug already exists',
+          'Ce slug de catégorie existe déjà.',
         );
       }
 
@@ -638,14 +712,15 @@ export class AdminService {
     /*
      * Permanent category deletion.
      *
-     * This is intentionally conservative:
-     * - a category cannot be permanently deleted while products still use it;
-     * - a parent category cannot be permanently deleted while child categories exist;
-     * - profile and hero images are removed from PostgreSQL first, then their
-     *   Supabase Storage objects are cleaned up best-effort.
+     * A whole branch can be deleted in one action:
+     * Category -> subcategories -> optional sub-subcategories.
      *
-     * Activation/deactivation is handled separately through updateCategory()
-     * with isActive=true/false.
+     * Safety rule:
+     * - if ANY product still references ANY category in the branch,
+     *   deletion is blocked;
+     * - otherwise all category rows and all category hero-image rows in
+     *   the branch are deleted in the same PostgreSQL transaction;
+     * - Supabase Storage cleanup then runs best-effort after commit.
      */
     const deletedCategory =
       await this.db.transaction(
@@ -669,126 +744,202 @@ export class AdminService {
 
           if (!existing) {
             throw new NotFoundException(
-              'Category not found',
+              'Catégorie introuvable.',
             );
           }
 
-          const [[productUsage], [childUsage]] =
-            await Promise.all([
-              tx
-                .select({
-                  count: sql<number>`count(*)::int`,
-                })
-                .from(products)
-                .where(
-                  or(
-                    eq(
-                      products.categoryId,
-                      categoryId,
-                    ),
-                    eq(
-                      products.subcategoryId,
-                      categoryId,
-                    ),
-                    eq(
-                      products.subsubcategoryId,
-                      categoryId,
-                    ),
-                  ),
-                ),
+          type CategoryBranchRow = {
+            id: string;
+            name: string;
+            imageStoragePath:
+              | string
+              | null;
+          };
 
-              tx
+          const branchRows:
+            CategoryBranchRow[] = [
+              existing,
+            ];
+
+          const visited =
+            new Set<string>([
+              categoryId,
+            ]);
+
+          let frontier = [
+            categoryId,
+          ];
+
+          /*
+           * Collect and lock the complete branch. The catalogue supports
+           * at most three levels, but this traversal stays safe even if
+           * inconsistent historical data exists.
+           */
+          while (
+            frontier.length > 0
+          ) {
+            const children =
+              await tx
                 .select({
-                  count: sql<number>`count(*)::int`,
+                  id:
+                    categories.id,
+                  name:
+                    categories.name,
+                  imageStoragePath:
+                    categories.imageStoragePath,
                 })
                 .from(categories)
                 .where(
-                  eq(
+                  inArray(
                     categories.parentId,
-                    categoryId,
+                    frontier,
+                  ),
+                )
+                .for('update');
+
+            const nextFrontier:
+              string[] = [];
+
+            for (
+              const child of children
+            ) {
+              if (
+                visited.has(
+                  child.id,
+                )
+              ) {
+                continue;
+              }
+
+              visited.add(
+                child.id,
+              );
+              branchRows.push(
+                child,
+              );
+              nextFrontier.push(
+                child.id,
+              );
+            }
+
+            frontier =
+              nextFrontier;
+          }
+
+          const branchIds =
+            branchRows.map(
+              (category) =>
+                category.id,
+            );
+
+          const [productUsage] =
+            await tx
+              .select({
+                count:
+                  sql<number>`count(*)::int`,
+              })
+              .from(products)
+              .where(
+                or(
+                  inArray(
+                    products.categoryId,
+                    branchIds,
+                  ),
+                  inArray(
+                    products.subcategoryId,
+                    branchIds,
+                  ),
+                  inArray(
+                    products.subsubcategoryId,
+                    branchIds,
                   ),
                 ),
-            ]);
+              );
 
           if (
-            (productUsage?.count ?? 0) > 0
+            (productUsage?.count ??
+              0) > 0
           ) {
             throw new ConflictException(
-              'Category cannot be permanently deleted while products still use it',
+              'Impossible de supprimer cette catégorie : un ou plusieurs produits utilisent encore cette catégorie ou une de ses sous-catégories.',
             );
           }
 
-          if (
-            (childUsage?.count ?? 0) > 0
-          ) {
-            throw new ConflictException(
-              'Category cannot be permanently deleted while child categories still exist',
-            );
-          }
-
-          const heroImages = await tx
-            .select({
-              storagePath:
-                categoryImages.storagePath,
-            })
-            .from(categoryImages)
-            .where(
-              eq(
-                categoryImages.categoryId,
-                categoryId,
-              ),
-            );
+          const heroImages =
+            await tx
+              .select({
+                categoryId:
+                  categoryImages.categoryId,
+                storagePath:
+                  categoryImages.storagePath,
+              })
+              .from(categoryImages)
+              .where(
+                inArray(
+                  categoryImages.categoryId,
+                  branchIds,
+                ),
+              );
 
           await tx
             .delete(categoryImages)
             .where(
-              eq(
+              inArray(
                 categoryImages.categoryId,
-                categoryId,
+                branchIds,
               ),
             );
 
-          const [deleted] = await tx
-            .delete(categories)
-            .where(
-              eq(
-                categories.id,
-                categoryId,
-              ),
-            )
-            .returning({
-              id: categories.id,
-            });
-
-          if (!deleted) {
-            throw new NotFoundException(
-              'Category not found',
-            );
+          /*
+           * Delete children before parents. This avoids relying on the
+           * self-referencing FK's ON DELETE behavior and guarantees that
+           * no child is left orphaned.
+           */
+          for (
+            const id of [
+              ...branchIds,
+            ].reverse()
+          ) {
+            await tx
+              .delete(categories)
+              .where(
+                eq(
+                  categories.id,
+                  id,
+                ),
+              );
           }
 
-          const storagePaths = Array.from(
-            new Set(
-              [
-                existing.imageStoragePath,
-                ...heroImages.map(
-                  (image) =>
-                    image.storagePath,
-                ),
-              ].filter(
-                (
-                  storagePath,
-                ): storagePath is string =>
-                  Boolean(
-                    storagePath,
+          const storagePaths =
+            Array.from(
+              new Set(
+                [
+                  ...branchRows.map(
+                    (category) =>
+                      category.imageStoragePath,
                   ),
+                  ...heroImages.map(
+                    (image) =>
+                      image.storagePath,
+                  ),
+                ].filter(
+                  (
+                    storagePath,
+                  ): storagePath is string =>
+                    Boolean(
+                      storagePath,
+                    ),
+                ),
               ),
-            ),
-          );
+            );
 
           return {
-            id: deleted.id,
-            name: existing.name,
+            id: existing.id,
+            name:
+              existing.name,
             storagePaths,
+            deletedCategoryCount:
+              branchIds.length,
           };
         },
       );
@@ -796,8 +947,10 @@ export class AdminService {
     let storageDeleted = 0;
     let storageCleanupFailed = 0;
 
-    for (const storagePath of
-      deletedCategory.storagePaths) {
+    for (
+      const storagePath of
+      deletedCategory.storagePaths
+    ) {
       try {
         await this.mediaService.delete(
           storagePath,
@@ -821,7 +974,7 @@ export class AdminService {
             : String(error);
 
         this.logger.warn(
-          `Category "${deletedCategory.name}" (${deletedCategory.id}) was deleted from PostgreSQL but Storage cleanup failed for ${storagePath}: ${message}`,
+          `Category branch "${deletedCategory.name}" (${deletedCategory.id}) was deleted from PostgreSQL but Storage cleanup failed for ${storagePath}: ${message}`,
         );
       }
     }
@@ -830,6 +983,8 @@ export class AdminService {
       success: true,
       id: deletedCategory.id,
       permanentlyDeleted: true,
+      deletedCategoryCount:
+        deletedCategory.deletedCategoryCount,
       storageDeleted,
       storageCleanupFailed,
     };
@@ -3427,73 +3582,133 @@ export class AdminService {
     }
   }
 
-  private async assertCategoryCanBeDeactivated(
+  private async getCategorySubtreeIds(
     categoryId: string,
-  ): Promise<void> {
-    const [[productUsage], [childUsage]] =
-      await Promise.all([
-        this.db
-          .select({
-            count: sql<number>`count(*)::int`,
-          })
-          .from(products)
-          .where(
-            and(
-              or(
-                eq(
-                  products.categoryId,
-                  categoryId,
-                ),
-                eq(
-                  products.subcategoryId,
-                  categoryId,
-                ),
-                eq(
-                  products.subsubcategoryId,
-                  categoryId,
-                ),
-              ),
-              eq(
-                products.isActive,
-                true,
-              ),
-            ),
-          ),
+  ): Promise<string[]> {
+    const [existing] = await this.db
+      .select({
+        id: categories.id,
+      })
+      .from(categories)
+      .where(
+        eq(
+          categories.id,
+          categoryId,
+        ),
+      )
+      .limit(1);
 
-        this.db
+    if (!existing) {
+      throw new NotFoundException(
+        'Catégorie introuvable.',
+      );
+    }
+
+    const subtreeIds = [
+      categoryId,
+    ];
+    const visited =
+      new Set<string>([
+        categoryId,
+      ]);
+    let frontier = [
+      categoryId,
+    ];
+
+    while (
+      frontier.length > 0
+    ) {
+      const children =
+        await this.db
           .select({
-            count: sql<number>`count(*)::int`,
+            id: categories.id,
           })
           .from(categories)
           .where(
-            and(
-              eq(
-                categories.parentId,
-                categoryId,
+            inArray(
+              categories.parentId,
+              frontier,
+            ),
+          );
+
+      const nextFrontier =
+        children
+          .map(
+            (child) =>
+              child.id,
+          )
+          .filter(
+            (id) =>
+              !visited.has(id),
+          );
+
+      for (
+        const id of
+        nextFrontier
+      ) {
+        visited.add(id);
+        subtreeIds.push(id);
+      }
+
+      frontier =
+        nextFrontier;
+    }
+
+    return subtreeIds;
+  }
+
+  private async assertCategoryCanBeDeactivated(
+    categoryId: string,
+  ): Promise<string[]> {
+    const subtreeIds =
+      await this.getCategorySubtreeIds(
+        categoryId,
+      );
+
+    const [productUsage] =
+      await this.db
+        .select({
+          count:
+            sql<number>`count(*)::int`,
+        })
+        .from(products)
+        .where(
+          and(
+            or(
+              inArray(
+                products.categoryId,
+                subtreeIds,
               ),
-              eq(
-                categories.isActive,
-                true,
+              inArray(
+                products.subcategoryId,
+                subtreeIds,
+              ),
+              inArray(
+                products.subsubcategoryId,
+                subtreeIds,
               ),
             ),
+            eq(
+              products.isActive,
+              true,
+            ),
           ),
-      ]);
+        );
 
     if (
-      (productUsage?.count ?? 0) > 0
+      (productUsage?.count ?? 0) >
+      0
     ) {
       throw new ConflictException(
-        'Category cannot be deactivated while active products use it',
+        'Impossible de désactiver cette catégorie : un ou plusieurs produits actifs utilisent encore cette catégorie ou une de ses sous-catégories.',
       );
     }
 
-    if (
-      (childUsage?.count ?? 0) > 0
-    ) {
-      throw new ConflictException(
-        'Category cannot be deactivated while active child categories use it',
-      );
-    }
+    /*
+     * Child categories are intentionally NOT a blocker anymore.
+     * updateCategory() will deactivate every descendant atomically.
+     */
+    return subtreeIds;
   }
 
   private normalizePromotionInput(
