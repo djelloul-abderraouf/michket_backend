@@ -250,6 +250,20 @@ export class DeliveryService {
       !Number.isFinite(amountDa) ||
       amountDa < 0
     ) {
+      if (deliveryType === 'office') {
+        let diagnosticPayload = '';
+
+        try {
+          diagnosticPayload = JSON.stringify(fees);
+        } catch {
+          diagnosticPayload = '[unable to serialize Yalidine fees payload]';
+        }
+
+        this.logger.error(
+          `YALIDINE_FEES_DIAGNOSTIC communeId=${communeId} fromWilaya=${fromWilayaCode} toWilaya=${toWilayaCode} payload=${diagnosticPayload.slice(0, 20000)}`,
+        );
+      }
+
       throw new ServiceUnavailableException(
         `Yalidine did not return a valid ${
           deliveryType === 'home'
