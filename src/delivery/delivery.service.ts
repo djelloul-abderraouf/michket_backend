@@ -105,7 +105,7 @@ const WILAYAS = [
   { code: 58, name: 'El Meniaa' },
 ] as const;
 
-// Yalidine Stop Desk compatibility update: supports multiple fee field names.\nconst LOCATION_CACHE_TTL_MS = 60 * 60 * 1000;
+const LOCATION_CACHE_TTL_MS = 60 * 60 * 1000;
 const FEES_CACHE_TTL_MS = 10 * 60 * 1000;
 const PAGE_SIZE = 100;
 const MAX_PAGES = 50;
@@ -215,6 +215,10 @@ export class DeliveryService {
       fromWilayaCode,
       toWilayaCode,
     );
+    console.log(
+  "YALIDINE FEES RESPONSE:",
+  JSON.stringify(fees, null, 2),
+);
 
     const communeFee =
       this.findCommuneFee(fees, communeId);
@@ -233,14 +237,9 @@ export class DeliveryService {
               'express_stopdesk',
               'express_stop_desk',
               'expressStopDesk',
-              'express_stopdesk_price',
               'stopdesk',
               'stop_desk',
-              'stopDesk',
-              'stop_desk_price',
               'office',
-              'office_delivery',
-              'desk',
             ],
           )
         : this.readFirstNumber(
@@ -906,14 +905,9 @@ export class DeliveryService {
         'express_stopdesk',
         'express_stop_desk',
         'expressStopDesk',
-        'express_stopdesk_price',
         'stopdesk',
         'stop_desk',
-        'stopDesk',
-        'stop_desk_price',
         'office',
-        'office_delivery',
-        'desk',
       ]) != null
     );
   }
