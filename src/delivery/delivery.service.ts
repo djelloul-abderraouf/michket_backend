@@ -22,6 +22,28 @@ type WilayaRateConfig = {
 
 type DeliveryRatesConfig = Record<string, WilayaRateConfig>;
 
+type YalidineWilaya = {
+  code: number;
+  name: string;
+  available: boolean;
+  homeAvailable: boolean;
+  officeAvailable: boolean;
+};
+
+type YalidineCommune = {
+  id: number;
+  name: string;
+  wilayaCode: number;
+  available: boolean;
+  hasStopDesk: boolean;
+  deliveryTime: string | null;
+};
+
+type CacheEntry<T> = {
+  expiresAt: number;
+  value: T;
+};
+
 const WILAYAS = [
   { code: 1, name: 'Adrar' },
   { code: 2, name: 'Chlef' },
@@ -83,23 +105,49 @@ const WILAYAS = [
   { code: 58, name: 'El Meniaa' },
 ] as const;
 
+const LOCATION_CACHE_TTL_MS = 60 * 60 * 1000;
+const FEES_CACHE_TTL_MS = 10 * 60 * 1000;
+const PAGE_SIZE = 100;
+const MAX_PAGES = 50;
+
 @Injectable()
 export class DeliveryService {
   private readonly logger = new Logger(DeliveryService.name);
+
+  private wilayasCache: CacheEntry<YalidineWilaya[]> | null =
+    null;
+
+  private readonly communesCache = new Map<
+    number,
+    CacheEntry<YalidineCommune[]>
+  >();
+
+  private readonly feesCache = new Map<
+    string,
+    CacheEntry<unknown>
+  >();
 
   constructor(
     private readonly configService: ConfigService,
   ) {}
 
   /**
-   * Authoritative server-side delivery pricing.
+   * Server-authoritative delivery pricing.
    *
-   * Rates come from DELIVERY_RATES_JSON.
-   * We intentionally do not provide invented fallback prices.
+   * New Yalidine flow:
+   * - destination wilaya + commune are required for an exact Yalidine rate;
+   * - "home" uses Yalidine Express Home;
+   * - "office" uses Yalidine Express Stop Desk when available.
+   *
+   * communeId stays optional temporarily so the existing checkout/order code
+   * keeps compiling while we update the controller and frontend in the next
+   * steps. When communeId is omitted we keep the old DELIVERY_RATES_JSON
+   * behaviour only as a temporary compatibility fallback.
    */
   async calculateRate(
     toWilayaCode: number,
     deliveryType: DeliveryType = 'home',
+    communeId?: number,
   ): Promise<DeliveryRate> {
     this.assertWilayaCode(toWilayaCode);
 
@@ -112,63 +160,211 @@ export class DeliveryService {
       );
     }
 
-    // Stop-desk / office delivery stays disabled until we have
-    // an authoritative carrier dataset (for example Yalidine).
-    if (deliveryType === 'office') {
-      throw new ServiceUnavailableException(
-        'Office delivery is temporarily unavailable',
+    if (communeId == null) {
+      this.logger.warn(
+        'Delivery rate requested without communeId; using temporary legacy DELIVERY_RATES_JSON fallback',
+      );
+
+      return this.calculateLegacyRate(
+        toWilayaCode,
+        deliveryType,
       );
     }
 
-    const rates = this.getConfiguredRates();
-    const wilayaRate = rates[String(toWilayaCode)];
-
-    if (!wilayaRate) {
-      throw new ServiceUnavailableException(
-        `Delivery rate is not configured for wilaya ${toWilayaCode}`,
+    if (
+      !Number.isInteger(communeId) ||
+      communeId <= 0
+    ) {
+      throw new BadRequestException(
+        'Commune id must be a positive integer',
       );
     }
 
-    const amountCents = wilayaRate.home;
+    const communes =
+      await this.getCommunes(toWilayaCode);
 
-    if (!this.isValidRate(amountCents)) {
+    const commune = communes.find(
+      (item) => item.id === communeId,
+    );
+
+    if (!commune) {
+      throw new BadRequestException(
+        'Selected commune does not belong to the selected wilaya',
+      );
+    }
+
+    if (!commune.available) {
       throw new ServiceUnavailableException(
-        `Delivery rate is not configured for home delivery in wilaya ${toWilayaCode}`,
+        'Delivery is not available for the selected commune',
+      );
+    }
+
+    if (
+      deliveryType === 'office' &&
+      !commune.hasStopDesk
+    ) {
+      throw new ServiceUnavailableException(
+        'Stop-desk delivery is not available for the selected commune',
+      );
+    }
+
+    const fromWilayaCode =
+      this.getFromWilayaCode();
+
+    const fees = await this.getFees(
+      fromWilayaCode,
+      toWilayaCode,
+    );
+
+    const communeFee =
+      this.findCommuneFee(fees, communeId);
+
+    if (!communeFee) {
+      throw new ServiceUnavailableException(
+        'Yalidine did not return a delivery fee for the selected commune',
+      );
+    }
+
+    const amountDa =
+      deliveryType === 'office'
+        ? this.readFirstNumber(
+            communeFee,
+            [
+              'express_stopdesk',
+              'express_stop_desk',
+              'expressStopDesk',
+              'stopdesk',
+              'stop_desk',
+              'office',
+            ],
+          )
+        : this.readFirstNumber(
+            communeFee,
+            [
+              'express_home',
+              'expressHome',
+              'home',
+              'home_delivery',
+            ],
+          );
+
+    if (
+      amountDa == null ||
+      !Number.isFinite(amountDa) ||
+      amountDa < 0
+    ) {
+      throw new ServiceUnavailableException(
+        `Yalidine did not return a valid ${
+          deliveryType === 'home'
+            ? 'home'
+            : 'stop-desk'
+        } delivery fee for the selected commune`,
       );
     }
 
     return {
-      amountCents,
+      amountCents: Math.round(amountDa * 100),
       currency: 'DZD',
-      estimate: wilayaRate.estimate?.trim() || null,
+      estimate: commune.deliveryTime,
     };
   }
 
   /**
-   * Return all 58 wilayas and tell the frontend which ones can
-   * currently be used for checkout.
+   * Wilayas are now loaded from Yalidine instead of being exposed from the
+   * hard-coded local list. The local list is retained only for synchronous
+   * internal name lookup used elsewhere in the current backend.
    */
-  async getWilayas() {
-    const rates = this.getConfiguredRates();
+  async getWilayas(): Promise<YalidineWilaya[]> {
+    const cached = this.getCache(
+      this.wilayasCache,
+    );
 
-    return WILAYAS.map((wilaya) => {
-      const wilayaRate = rates[String(wilaya.code)];
-      const homeAvailable = this.isValidRate(
-        wilayaRate?.home,
+    if (cached) {
+      return cached;
+    }
+
+    const rawItems = await this.fetchAllPages(
+      'wilayas',
+    );
+
+    const wilayas = rawItems
+      .map((item) => this.mapWilaya(item))
+      .filter(
+        (
+          item,
+        ): item is YalidineWilaya => item !== null,
+      )
+      .sort((a, b) => a.code - b.code);
+
+    if (wilayas.length === 0) {
+      throw new ServiceUnavailableException(
+        'Yalidine returned no wilayas',
       );
+    }
 
-      return {
-        ...wilaya,
-        available: homeAvailable,
-        homeAvailable,
-        officeAvailable: false,
-      };
-    });
+    this.wilayasCache = this.makeCache(
+      wilayas,
+      LOCATION_CACHE_TTL_MS,
+    );
+
+    return wilayas;
   }
 
   /**
-   * Returns the server-authoritative wilaya for a code.
-   * Checkout can use this instead of trusting a client-provided name.
+   * Returns Yalidine communes for one courier wilaya.
+   *
+   * The response intentionally exposes only the fields the storefront needs.
+   */
+  async getCommunes(
+    wilayaCode: number,
+  ): Promise<YalidineCommune[]> {
+    this.assertWilayaCode(wilayaCode);
+
+    const cached = this.getCache(
+      this.communesCache.get(wilayaCode) ??
+        null,
+    );
+
+    if (cached) {
+      return cached;
+    }
+
+    const rawItems = await this.fetchAllPages(
+      'communes',
+      {
+        wilaya_id: wilayaCode,
+      },
+    );
+
+    const communes = rawItems
+      .map((item) =>
+        this.mapCommune(item, wilayaCode),
+      )
+      .filter(
+        (
+          item,
+        ): item is YalidineCommune =>
+          item !== null,
+      )
+      .sort((a, b) =>
+        a.name.localeCompare(b.name, 'fr'),
+      );
+
+    this.communesCache.set(
+      wilayaCode,
+      this.makeCache(
+        communes,
+        LOCATION_CACHE_TTL_MS,
+      ),
+    );
+
+    return communes;
+  }
+
+  /**
+   * Existing synchronous helpers are kept because other backend services
+   * already use them. Checkout destination lists themselves now come from
+   * Yalidine through getWilayas()/getCommunes().
    */
   getWilayaByCode(wilayaCode: number) {
     this.assertWilayaCode(wilayaCode);
@@ -190,36 +386,875 @@ export class DeliveryService {
     return this.getWilayaByCode(wilayaCode).name;
   }
 
+  private async getFees(
+    fromWilayaCode: number,
+    toWilayaCode: number,
+  ): Promise<unknown> {
+    const cacheKey = `${fromWilayaCode}:${toWilayaCode}`;
+
+    const cached = this.getCache(
+      this.feesCache.get(cacheKey) ?? null,
+    );
+
+    if (cached !== null) {
+      return cached;
+    }
+
+    const payload = await this.yalidineGet(
+      'fees',
+      {
+        from_wilaya_id: fromWilayaCode,
+        to_wilaya_id: toWilayaCode,
+      },
+    );
+
+    this.feesCache.set(
+      cacheKey,
+      this.makeCache(
+        payload,
+        FEES_CACHE_TTL_MS,
+      ),
+    );
+
+    return payload;
+  }
+
+  private async fetchAllPages(
+    path: string,
+    params: Record<
+      string,
+      string | number | boolean
+    > = {},
+  ): Promise<unknown[]> {
+    const all: unknown[] = [];
+    let page = 1;
+
+    while (page <= MAX_PAGES) {
+      const payload = await this.yalidineGet(
+        path,
+        {
+          ...params,
+          page,
+          page_size: PAGE_SIZE,
+        },
+      );
+
+      const items =
+        this.extractCollection(payload);
+
+      all.push(...items);
+
+      const pagination =
+        this.readPagination(payload);
+
+      if (pagination.hasMore === false) {
+        break;
+      }
+
+      if (
+        pagination.hasMore == null &&
+        items.length < PAGE_SIZE
+      ) {
+        break;
+      }
+
+      if (items.length === 0) {
+        break;
+      }
+
+      page += 1;
+    }
+
+    return all;
+  }
+
+  private async yalidineGet(
+    path: string,
+    params: Record<
+      string,
+      string | number | boolean
+    > = {},
+  ): Promise<unknown> {
+    const {
+      apiId,
+      apiToken,
+      baseUrl,
+      timeoutMs,
+    } = this.getYalidineConfig();
+
+    const url = new URL(
+      `${baseUrl.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`,
+    );
+
+    Object.entries(params).forEach(
+      ([key, value]) => {
+        url.searchParams.set(
+          key,
+          String(value),
+        );
+      },
+    );
+
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      timeoutMs,
+    );
+
+    try {
+      const response = await fetch(
+        url.toString(),
+        {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+            'X-API-ID': apiId,
+            'X-API-TOKEN': apiToken,
+          },
+          signal: controller.signal,
+        },
+      );
+
+      if (
+        response.status === 401 ||
+        response.status === 403
+      ) {
+        this.logger.error(
+          `Yalidine authentication failed (${response.status})`,
+        );
+
+        throw new ServiceUnavailableException(
+          'Yalidine authentication failed',
+        );
+      }
+
+      if (response.status === 429) {
+        this.logger.warn(
+          'Yalidine rate limit reached',
+        );
+
+        throw new ServiceUnavailableException(
+          'Yalidine is temporarily busy. Please try again.',
+        );
+      }
+
+      if (!response.ok) {
+        const responseText =
+          await response.text().catch(
+            () => '',
+          );
+
+        this.logger.error(
+          `Yalidine request failed: GET ${url.pathname} (${response.status})${
+            responseText
+              ? ` - ${responseText.slice(0, 500)}`
+              : ''
+          }`,
+        );
+
+        throw new ServiceUnavailableException(
+          'Unable to retrieve delivery data from Yalidine',
+        );
+      }
+
+      try {
+        return (await response.json()) as unknown;
+      } catch {
+        this.logger.error(
+          `Yalidine returned invalid JSON for GET ${url.pathname}`,
+        );
+
+        throw new ServiceUnavailableException(
+          'Yalidine returned an invalid response',
+        );
+      }
+    } catch (error) {
+      if (
+        error instanceof
+        ServiceUnavailableException
+      ) {
+        throw error;
+      }
+
+      if (
+        error instanceof Error &&
+        error.name === 'AbortError'
+      ) {
+        this.logger.error(
+          `Yalidine request timed out: GET ${url.pathname}`,
+        );
+
+        throw new ServiceUnavailableException(
+          'Yalidine request timed out',
+        );
+      }
+
+      this.logger.error(
+        `Yalidine request error: GET ${url.pathname}`,
+        error,
+      );
+
+      throw new ServiceUnavailableException(
+        'Unable to contact Yalidine',
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private getYalidineConfig() {
+    const apiId = this.configService
+      .get<string>('YALIDINE_API_ID')
+      ?.trim();
+
+    const apiToken = this.configService
+      .get<string>('YALIDINE_API_TOKEN')
+      ?.trim();
+
+    if (!apiId || !apiToken) {
+      throw new ServiceUnavailableException(
+        'Yalidine credentials are not configured on the server',
+      );
+    }
+
+    const baseUrl =
+      this.configService
+        .get<string>('YALIDINE_BASE_URL')
+        ?.trim() ||
+      'https://api.yalidine.app/v1';
+
+    const timeoutMs =
+      this.configService.get<number>(
+        'YALIDINE_REQUEST_TIMEOUT_MS',
+      ) ?? 10000;
+
+    return {
+      apiId,
+      apiToken,
+      baseUrl,
+      timeoutMs,
+    };
+  }
+
+  private getFromWilayaCode(): number {
+    const value =
+      this.configService.get<number>(
+        'DELIVERY_FROM_WILAYA',
+      ) ?? 16;
+
+    this.assertWilayaCode(value);
+
+    return value;
+  }
+
+  private mapWilaya(
+    value: unknown,
+  ): YalidineWilaya | null {
+    const item = this.asRecord(value);
+
+    if (!item) {
+      return null;
+    }
+
+    const code = this.readFirstInteger(
+      item,
+      ['id', 'wilaya_id', 'code'],
+    );
+
+    const name = this.readFirstString(
+      item,
+      ['name', 'wilaya_name'],
+    );
+
+    if (
+      code == null ||
+      code < 1 ||
+      code > 58 ||
+      !name
+    ) {
+      return null;
+    }
+
+    const available =
+      this.readFirstBoolean(
+        item,
+        [
+          'is_deliverable',
+          'deliverable',
+          'available',
+          'is_active',
+        ],
+      ) ?? true;
+
+    return {
+      code,
+      name,
+      available,
+      homeAvailable: available,
+      // Stop-desk availability is commune-specific. We do not invent a
+      // wilaya-level value here.
+      officeAvailable: false,
+    };
+  }
+
+  private mapCommune(
+    value: unknown,
+    expectedWilayaCode: number,
+  ): YalidineCommune | null {
+    const item = this.asRecord(value);
+
+    if (!item) {
+      return null;
+    }
+
+    const id = this.readFirstInteger(
+      item,
+      ['id', 'commune_id'],
+    );
+
+    const name = this.readFirstString(
+      item,
+      ['name', 'commune_name'],
+    );
+
+    const returnedWilayaCode =
+      this.readFirstInteger(item, [
+        'wilaya_id',
+        'wilayaId',
+      ]);
+
+    if (
+      id == null ||
+      id <= 0 ||
+      !name ||
+      (returnedWilayaCode != null &&
+        returnedWilayaCode !==
+          expectedWilayaCode)
+    ) {
+      return null;
+    }
+
+    const available =
+      this.readFirstBoolean(
+        item,
+        [
+          'is_deliverable',
+          'deliverable',
+          'available',
+          'is_active',
+        ],
+      ) ?? true;
+
+    const hasStopDesk =
+      this.readFirstBoolean(
+        item,
+        [
+          'has_stop_desk',
+          'has_stopdesk',
+          'hasStopDesk',
+        ],
+      ) ?? false;
+
+    const deliveryTime =
+      this.readDeliveryTime(item);
+
+    return {
+      id,
+      name,
+      wilayaCode: expectedWilayaCode,
+      available,
+      hasStopDesk,
+      deliveryTime,
+    };
+  }
+
+  private readDeliveryTime(
+    item: Record<string, unknown>,
+  ): string | null {
+    const raw =
+      item.delivery_time_parcel ??
+      item.deliveryTimeParcel ??
+      item.delivery_time;
+
+    if (
+      typeof raw === 'string' &&
+      raw.trim()
+    ) {
+      return raw.trim();
+    }
+
+    if (
+      typeof raw === 'number' &&
+      Number.isFinite(raw)
+    ) {
+      return `${raw} jour${raw === 1 ? '' : 's'}`;
+    }
+
+    return null;
+  }
+
   /**
-   * Communes are intentionally not fabricated here.
-   * This method will later use the authoritative delivery/CRM dataset.
+   * Yalidine fee responses are nested by commune. Their public integrations
+   * expose commune_id + express_home/express_stopdesk, but this recursive
+   * lookup deliberately tolerates array/object wrappers and maps keyed by
+   * commune id so minor response-envelope changes do not break checkout.
    */
-  async getCommunes(wilayaCode: number) {
-    this.assertWilayaCode(wilayaCode);
+  private findCommuneFee(
+    payload: unknown,
+    communeId: number,
+  ): Record<string, unknown> | null {
+    const visited = new Set<object>();
+
+    const visit = (
+      value: unknown,
+    ): Record<string, unknown> | null => {
+      if (
+        value === null ||
+        value === undefined
+      ) {
+        return null;
+      }
+
+      if (Array.isArray(value)) {
+        if (visited.has(value)) {
+          return null;
+        }
+
+        visited.add(value);
+
+        for (const item of value) {
+          const found = visit(item);
+
+          if (found) {
+            return found;
+          }
+        }
+
+        return null;
+      }
+
+      const record = this.asRecord(value);
+
+      if (!record) {
+        return null;
+      }
+
+      if (visited.has(record)) {
+        return null;
+      }
+
+      visited.add(record);
+
+      const directById =
+        record[String(communeId)];
+
+      const directRecord =
+        this.asRecord(directById);
+
+      if (
+        directRecord &&
+        this.hasRecognizedFee(
+          directRecord,
+        )
+      ) {
+        return directRecord;
+      }
+
+      const recordCommuneId =
+        this.readFirstInteger(record, [
+          'commune_id',
+          'communeId',
+        ]);
+
+      if (
+        recordCommuneId === communeId &&
+        this.hasRecognizedFee(record)
+      ) {
+        return record;
+      }
+
+      for (const nested of Object.values(
+        record,
+      )) {
+        const found = visit(nested);
+
+        if (found) {
+          return found;
+        }
+      }
+
+      return null;
+    };
+
+    return visit(payload);
+  }
+
+  private hasRecognizedFee(
+    record: Record<string, unknown>,
+  ) {
+    return (
+      this.readFirstNumber(record, [
+        'express_home',
+        'expressHome',
+        'home',
+        'home_delivery',
+        'express_stopdesk',
+        'express_stop_desk',
+        'expressStopDesk',
+        'stopdesk',
+        'stop_desk',
+        'office',
+      ]) != null
+    );
+  }
+
+  private extractCollection(
+    payload: unknown,
+  ): unknown[] {
+    if (Array.isArray(payload)) {
+      return payload;
+    }
+
+    const record = this.asRecord(payload);
+
+    if (!record) {
+      return [];
+    }
+
+    const candidates = [
+      record.data,
+      record.items,
+      record.results,
+      record.wilayas,
+      record.communes,
+    ];
+
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate)) {
+        return candidate;
+      }
+
+      const nested =
+        this.asRecord(candidate);
+
+      if (
+        nested &&
+        Array.isArray(nested.data)
+      ) {
+        return nested.data;
+      }
+    }
 
     return [];
   }
 
-  private getConfiguredRates(): DeliveryRatesConfig {
+  private readPagination(payload: unknown): {
+    hasMore: boolean | null;
+  } {
+    const record = this.asRecord(payload);
+
+    if (!record) {
+      return {
+        hasMore: null,
+      };
+    }
+
+    const explicit =
+      this.readFirstBoolean(record, [
+        'has_more',
+        'hasMore',
+      ]);
+
+    if (explicit != null) {
+      return {
+        hasMore: explicit,
+      };
+    }
+
+    const currentPage =
+      this.readFirstInteger(record, [
+        'current_page',
+        'page',
+      ]);
+
+    const totalPages =
+      this.readFirstInteger(record, [
+        'total_pages',
+        'last_page',
+      ]);
+
+    if (
+      currentPage != null &&
+      totalPages != null
+    ) {
+      return {
+        hasMore:
+          currentPage < totalPages,
+      };
+    }
+
+    if (
+      typeof record.next === 'string'
+    ) {
+      return {
+        hasMore: record.next.trim() !== '',
+      };
+    }
+
+    if (record.next === null) {
+      return {
+        hasMore: false,
+      };
+    }
+
+    const links = this.asRecord(
+      record.links,
+    );
+
+    if (links) {
+      if (
+        typeof links.next === 'string'
+      ) {
+        return {
+          hasMore:
+            links.next.trim() !== '',
+        };
+      }
+
+      if (links.next === null) {
+        return {
+          hasMore: false,
+        };
+      }
+    }
+
+    return {
+      hasMore: null,
+    };
+  }
+
+  private asRecord(
+    value: unknown,
+  ): Record<string, unknown> | null {
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      Array.isArray(value)
+    ) {
+      return null;
+    }
+
+    return value as Record<
+      string,
+      unknown
+    >;
+  }
+
+  private readFirstString(
+    record: Record<string, unknown>,
+    keys: string[],
+  ): string | null {
+    for (const key of keys) {
+      const value = record[key];
+
+      if (
+        typeof value === 'string' &&
+        value.trim()
+      ) {
+        return value.trim();
+      }
+    }
+
+    return null;
+  }
+
+  private readFirstInteger(
+    record: Record<string, unknown>,
+    keys: string[],
+  ): number | null {
+    const value =
+      this.readFirstNumber(record, keys);
+
+    if (
+      value == null ||
+      !Number.isInteger(value)
+    ) {
+      return null;
+    }
+
+    return value;
+  }
+
+  private readFirstNumber(
+    record: Record<string, unknown>,
+    keys: string[],
+  ): number | null {
+    for (const key of keys) {
+      const value = record[key];
+
+      if (
+        typeof value === 'number' &&
+        Number.isFinite(value)
+      ) {
+        return value;
+      }
+
+      if (
+        typeof value === 'string' &&
+        value.trim() !== ''
+      ) {
+        const parsed = Number(
+          value.trim().replace(',', '.'),
+        );
+
+        if (Number.isFinite(parsed)) {
+          return parsed;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private readFirstBoolean(
+    record: Record<string, unknown>,
+    keys: string[],
+  ): boolean | null {
+    for (const key of keys) {
+      const value = record[key];
+
+      if (typeof value === 'boolean') {
+        return value;
+      }
+
+      if (value === 1 || value === '1') {
+        return true;
+      }
+
+      if (value === 0 || value === '0') {
+        return false;
+      }
+
+      if (typeof value === 'string') {
+        const normalized =
+          value.trim().toLowerCase();
+
+        if (
+          normalized === 'true' ||
+          normalized === 'yes'
+        ) {
+          return true;
+        }
+
+        if (
+          normalized === 'false' ||
+          normalized === 'no'
+        ) {
+          return false;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private makeCache<T>(
+    value: T,
+    ttlMs: number,
+  ): CacheEntry<T> {
+    return {
+      expiresAt: Date.now() + ttlMs,
+      value,
+    };
+  }
+
+  private getCache<T>(
+    entry: CacheEntry<T> | null,
+  ): T | null {
+    if (!entry) {
+      return null;
+    }
+
+    if (entry.expiresAt <= Date.now()) {
+      return null;
+    }
+
+    return entry.value;
+  }
+
+  /**
+   * Temporary compatibility path only.
+   * It will be removed once controller + checkout + order creation all send
+   * the selected Yalidine commune id.
+   */
+  private async calculateLegacyRate(
+    toWilayaCode: number,
+    deliveryType: DeliveryType,
+  ): Promise<DeliveryRate> {
+    if (deliveryType === 'office') {
+      throw new ServiceUnavailableException(
+        'Office delivery is temporarily unavailable',
+      );
+    }
+
+    const rates =
+      this.getConfiguredLegacyRates();
+
+    const wilayaRate =
+      rates[String(toWilayaCode)];
+
+    if (!wilayaRate) {
+      throw new ServiceUnavailableException(
+        `Delivery rate is not configured for wilaya ${toWilayaCode}`,
+      );
+    }
+
+    const amountCents =
+      wilayaRate.home;
+
+    if (
+      !this.isValidLegacyRate(
+        amountCents,
+      )
+    ) {
+      throw new ServiceUnavailableException(
+        `Delivery rate is not configured for home delivery in wilaya ${toWilayaCode}`,
+      );
+    }
+
+    return {
+      amountCents,
+      currency: 'DZD',
+      estimate:
+        wilayaRate.estimate?.trim() ||
+        null,
+    };
+  }
+
+  private getConfiguredLegacyRates(): DeliveryRatesConfig {
     const raw = this.configService
       .get<string>('DELIVERY_RATES_JSON')
       ?.trim();
 
     if (!raw) {
       throw new ServiceUnavailableException(
-        'Delivery rates are not configured on the server',
+        'A commune must be selected before calculating the Yalidine delivery rate',
       );
     }
 
     try {
-      const parsed = JSON.parse(raw) as unknown;
+      const parsed = JSON.parse(
+        raw,
+      ) as unknown;
 
       if (
         !parsed ||
         typeof parsed !== 'object' ||
         Array.isArray(parsed)
       ) {
-        throw new Error('Invalid object');
+        throw new Error(
+          'Invalid object',
+        );
       }
 
       return parsed as DeliveryRatesConfig;
@@ -230,12 +1265,12 @@ export class DeliveryService {
       );
 
       throw new ServiceUnavailableException(
-        'Delivery rates configuration is invalid',
+        'Legacy delivery rates configuration is invalid',
       );
     }
   }
 
-  private isValidRate(
+  private isValidLegacyRate(
     amountCents: number | undefined,
   ): amountCents is number {
     return (
@@ -244,7 +1279,9 @@ export class DeliveryService {
     );
   }
 
-  private assertWilayaCode(wilayaCode: number): void {
+  private assertWilayaCode(
+    wilayaCode: number,
+  ): void {
     if (
       !Number.isInteger(wilayaCode) ||
       wilayaCode < 1 ||

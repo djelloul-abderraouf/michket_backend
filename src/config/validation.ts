@@ -13,6 +13,12 @@ const optionalUrl = z.preprocess(
   z.string().url().optional(),
 );
 
+const urlWithDefault = (defaultValue: string) =>
+  z.preprocess(
+    emptyToUndefined,
+    z.string().url().default(defaultValue),
+  );
+
 const booleanFromEnv = z.preprocess((value) => {
   if (value === undefined || value === null || value === '') {
     return undefined;
@@ -54,15 +60,54 @@ const envSchema = z.object({
   UPSTASH_REDIS_REST_TOKEN: optionalString,
   REDIS_URL: optionalString,
 
-  DELIVERY_FROM_WILAYA: z.coerce.number().int().min(1).max(58).default(16),
+  /**
+   * Yalidine still identifies courier destinations with its 1..58 wilaya
+   * catalogue. Keep the shipping origin in that same identifier space.
+   *
+   * Do not replace this with the new administrative 1..69 numbering until
+   * Yalidine itself exposes/supports those new courier IDs.
+   */
+  DELIVERY_FROM_WILAYA: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(58)
+    .default(16),
+
+  /**
+   * Legacy/manual rates are kept temporarily for backward compatibility.
+   * The Yalidine integration will stop using this as the authoritative
+   * checkout price once the carrier service is enabled.
+   */
   DELIVERY_RATES_JSON: optionalString,
 
   // Server-only secret used to derive guest order access tokens.
   // Keep it private and stable across deployments.
   ORDER_ACCESS_SECRET: z.string().min(32),
 
+  /**
+   * Yalidine credentials must stay server-side only.
+   * They remain optional at environment-validation level so local builds and
+   * maintenance commands can still start without carrier access; the delivery
+   * service itself will return a controlled 503 when credentials are absent.
+   */
   YALIDINE_API_ID: optionalString,
   YALIDINE_API_TOKEN: optionalString,
+
+  /**
+   * Keeping the base URL configurable lets us adapt if Yalidine changes the
+   * API host/version without touching application code.
+   */
+  YALIDINE_BASE_URL: urlWithDefault(
+    'https://api.yalidine.app/v1',
+  ),
+
+  YALIDINE_REQUEST_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1000)
+    .max(30000)
+    .default(10000),
 
   ORDER_WEBHOOK_URL: optionalUrl,
   SENTRY_DSN: optionalString,
