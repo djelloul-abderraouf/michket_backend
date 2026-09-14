@@ -4,6 +4,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import {
@@ -73,9 +74,10 @@ export type CreateOrderInput = {
   addressLine2?: string;
 
   wilayaCode: number;
+  communeId: number;
   commune: string;
 
-  deliveryType: string;
+  deliveryType: 'home' | 'office';
 
   notes?: string;
   promoCode?: string;
@@ -147,15 +149,64 @@ export class OrdersService {
     this.validateOrderInput(orderData);
     this.validateIdempotencyContext(orderData, context);
 
-    const authoritativeWilayaName =
-      this.deliveryService.getWilayaName(
-        orderData.wilayaCode,
+    const [yalidineWilayas, yalidineCommunes] =
+      await Promise.all([
+        this.deliveryService.getWilayas(),
+        this.deliveryService.getCommunes(
+          orderData.wilayaCode,
+        ),
+      ]);
+
+    const authoritativeWilaya = yalidineWilayas.find(
+      (wilaya) =>
+        wilaya.code === orderData.wilayaCode,
+    );
+
+    if (!authoritativeWilaya) {
+      throw new BadRequestException(
+        'Selected wilaya is not recognized by Yalidine',
+      );
+    }
+
+    if (!authoritativeWilaya.available) {
+      throw new ServiceUnavailableException(
+        'Delivery is not available for the selected wilaya',
+      );
+    }
+
+    const authoritativeCommune =
+      yalidineCommunes.find(
+        (commune) =>
+          commune.id === orderData.communeId,
       );
 
-    const deliveryRate = await this.deliveryService.calculateRate(
-      orderData.wilayaCode,
-      orderData.deliveryType as 'home' | 'office',
-    );
+    if (!authoritativeCommune) {
+      throw new BadRequestException(
+        'Selected commune does not belong to the selected wilaya',
+      );
+    }
+
+    if (!authoritativeCommune.available) {
+      throw new ServiceUnavailableException(
+        'Delivery is not available for the selected commune',
+      );
+    }
+
+    if (
+      orderData.deliveryType === 'office' &&
+      !authoritativeCommune.hasStopDesk
+    ) {
+      throw new ServiceUnavailableException(
+        'Stop-desk delivery is not available for the selected commune',
+      );
+    }
+
+    const deliveryRate =
+      await this.deliveryService.calculateRate(
+        orderData.wilayaCode,
+        orderData.deliveryType,
+        orderData.communeId,
+      );
 
     const normalizedPromoCode =
       orderData.promoCode?.trim().toUpperCase() ||
@@ -164,7 +215,8 @@ export class OrdersService {
     const normalizedOrderData = {
       ...orderData,
       promoCode: normalizedPromoCode,
-      wilayaName: authoritativeWilayaName,
+      wilayaName: authoritativeWilaya.name,
+      commune: authoritativeCommune.name,
       deliveryFeeCents: deliveryRate.amountCents,
     };
 
@@ -989,6 +1041,15 @@ export class OrdersService {
     }
 
     if (
+      !Number.isInteger(orderData.communeId) ||
+      orderData.communeId <= 0
+    ) {
+      throw new BadRequestException(
+        'Commune id must be a positive integer',
+      );
+    }
+
+    if (
       orderData.deliveryType !== 'home' &&
       orderData.deliveryType !== 'office'
     ) {
@@ -996,7 +1057,6 @@ export class OrdersService {
         'Delivery type must be "home" or "office"',
       );
     }
-
   }
 
   private validateItemQuantity(quantity: number): void {

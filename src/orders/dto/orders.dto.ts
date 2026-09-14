@@ -1,4 +1,5 @@
 import { Type } from 'class-transformer';
+
 import {
   ArrayMaxSize,
   ArrayMinSize,
@@ -77,6 +78,10 @@ export class CreateOrderDto {
   @Min(1)
   @Max(58)
   wilayaCode!: number;
+
+  @IsInt()
+  @Min(1)
+  communeId!: number;
 
   @IsString()
   @MinLength(1)
