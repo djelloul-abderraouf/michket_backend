@@ -1461,19 +1461,25 @@ export class AdminService {
     categoryId: string,
   ) {
     /*
-     * Permanent category deletion.
+     * Permanent catalogue branch deletion.
      *
-     * A whole branch can be deleted in one action:
-     * Category -> subcategories -> optional sub-subcategories.
+     * Deleting a category deletes the whole branch:
+     * - the selected category;
+     * - every descendant category;
+     * - every product attached anywhere in that branch;
+     * - cart lines that reference those products;
+     * - product images / variants / inventory through the existing
+     *   PostgreSQL cascades;
+     * - category hero images.
      *
-     * Safety rule:
-     * - if ANY product still references ANY category in the branch,
-     *   deletion is blocked;
-     * - otherwise all category rows and all category hero-image rows in
-     *   the branch are deleted in the same PostgreSQL transaction;
-     * - Supabase Storage cleanup then runs best-effort after commit.
+     * Historical order_items remain preserved because product / variant
+     * foreign keys are configured with ON DELETE SET NULL and the immutable
+     * order snapshots stay intact.
+     *
+     * All database deletions happen atomically. Storage cleanup runs only
+     * after the database transaction has committed.
      */
-    const deletedCategory =
+    const deletedBranch =
       await this.db.transaction(
         async (tx) => {
           const [existing] = await tx
@@ -1522,9 +1528,9 @@ export class AdminService {
           ];
 
           /*
-           * Collect and lock the complete branch. The catalogue supports
-           * at most three levels, but this traversal stays safe even if
-           * inconsistent historical data exists.
+           * Collect and lock the complete category branch.
+           * The catalogue normally has three levels, but this traversal
+           * remains safe if older inconsistent data contains more.
            */
           while (
             frontier.length > 0
@@ -1583,11 +1589,16 @@ export class AdminService {
                 category.id,
             );
 
-          const [productUsage] =
+          /*
+           * Products store explicit category / subcategory /
+           * subsubcategory ids. A match at any level means that product
+           * belongs to the branch being deleted.
+           */
+          const branchProducts =
             await tx
               .select({
-                count:
-                  sql<number>`count(*)::int`,
+                id: products.id,
+                name: products.name,
               })
               .from(products)
               .where(
@@ -1607,13 +1618,73 @@ export class AdminService {
                 ),
               );
 
-          if (
-            (productUsage?.count ??
-              0) > 0
-          ) {
-            throw new ConflictException(
-              'Impossible de supprimer cette catégorie : un ou plusieurs produits utilisent encore cette catégorie ou une de ses sous-catégories.',
+          const productIds =
+            branchProducts.map(
+              (product) =>
+                product.id,
             );
+
+          let productStoragePaths:
+            string[] = [];
+
+          if (
+            productIds.length > 0
+          ) {
+            const productImageRows =
+              await tx
+                .select({
+                  storagePath:
+                    productImages.storagePath,
+                })
+                .from(productImages)
+                .where(
+                  inArray(
+                    productImages.productId,
+                    productIds,
+                  ),
+                );
+
+            productStoragePaths =
+              productImageRows
+                .map(
+                  (image) =>
+                    image.storagePath,
+                )
+                .filter(
+                  (
+                    storagePath,
+                  ): storagePath is string =>
+                    Boolean(
+                      storagePath,
+                    ),
+                );
+
+            /*
+             * cart_items.productId is non-nullable and does not cascade
+             * from products, so stale cart lines must be removed first.
+             */
+            await tx
+              .delete(cartItems)
+              .where(
+                inArray(
+                  cartItems.productId,
+                  productIds,
+                ),
+              );
+
+            /*
+             * Existing database cascades remove product images, variants
+             * and inventory. order_items keep their immutable snapshots
+             * because the product / variant references use ON DELETE SET NULL.
+             */
+            await tx
+              .delete(products)
+              .where(
+                inArray(
+                  products.id,
+                  productIds,
+                ),
+              );
           }
 
           const heroImages =
@@ -1642,9 +1713,8 @@ export class AdminService {
             );
 
           /*
-           * Delete children before parents. This avoids relying on the
-           * self-referencing FK's ON DELETE behavior and guarantees that
-           * no child is left orphaned.
+           * Delete children before parents instead of relying on the
+           * self-referencing category FK's ON DELETE behaviour.
            */
           for (
             const id of [
@@ -1673,6 +1743,7 @@ export class AdminService {
                     (image) =>
                       image.storagePath,
                   ),
+                  ...productStoragePaths,
                 ].filter(
                   (
                     storagePath,
@@ -1691,6 +1762,8 @@ export class AdminService {
             storagePaths,
             deletedCategoryCount:
               branchIds.length,
+            deletedProductCount:
+              productIds.length,
           };
         },
       );
@@ -1700,7 +1773,7 @@ export class AdminService {
 
     for (
       const storagePath of
-      deletedCategory.storagePaths
+      deletedBranch.storagePaths
     ) {
       try {
         await this.mediaService.delete(
@@ -1725,17 +1798,19 @@ export class AdminService {
             : String(error);
 
         this.logger.warn(
-          `Category branch "${deletedCategory.name}" (${deletedCategory.id}) was deleted from PostgreSQL but Storage cleanup failed for ${storagePath}: ${message}`,
+          `Category branch "${deletedBranch.name}" (${deletedBranch.id}) was deleted from PostgreSQL but Storage cleanup failed for ${storagePath}: ${message}`,
         );
       }
     }
 
     return {
       success: true,
-      id: deletedCategory.id,
+      id: deletedBranch.id,
       permanentlyDeleted: true,
       deletedCategoryCount:
-        deletedCategory.deletedCategoryCount,
+        deletedBranch.deletedCategoryCount,
+      deletedProductCount:
+        deletedBranch.deletedProductCount,
       storageDeleted,
       storageCleanupFailed,
     };
