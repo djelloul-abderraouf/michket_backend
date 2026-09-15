@@ -25,6 +25,7 @@ import {
   categories,
   categoryImages,
   inventory,
+  orderItems,
   orders,
   productImages,
   products,
@@ -291,8 +292,41 @@ export class AdminService {
           .limit(safeLimit)
           .offset((safePage - 1) * safeLimit);
 
+    const orderIds = rows.map((order) => order.id);
+
+    const itemRows =
+      orderIds.length > 0
+        ? await this.db
+            .select()
+            .from(orderItems)
+            .where(inArray(orderItems.orderId, orderIds))
+            .orderBy(
+              asc(orderItems.createdAt),
+              asc(orderItems.id),
+            )
+        : [];
+
+    const itemsByOrderId = new Map<
+      string,
+      Array<typeof orderItems.$inferSelect>
+    >();
+
+    for (const item of itemRows) {
+      const existing =
+        itemsByOrderId.get(item.orderId) ?? [];
+
+      existing.push(item);
+      itemsByOrderId.set(item.orderId, existing);
+    }
+
     const data = rows.map(
-      ({ guestAccessTokenHash: _guestAccessTokenHash, ...order }) => order,
+      ({
+        guestAccessTokenHash: _guestAccessTokenHash,
+        ...order
+      }) => ({
+        ...order,
+        items: itemsByOrderId.get(order.id) ?? [],
+      }),
     );
 
     const total = countResult?.count ?? 0;
