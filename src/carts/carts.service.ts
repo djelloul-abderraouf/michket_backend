@@ -283,13 +283,46 @@ export class CartsService {
     });
   }
 
-  async updateOwnedItemQuantity(
+  async updateOwnedItem(
     itemId: string,
-    quantity: number,
+    input: {
+      quantity?: number;
+      variantId?: string | null;
+      personalization?: Record<string, unknown> | null;
+    },
     userId?: string,
     sessionId?: string,
   ) {
-    if (quantity <= 0) {
+    const hasQuantity =
+      input.quantity !== undefined;
+
+    const hasVariant =
+      Object.prototype.hasOwnProperty.call(
+        input,
+        'variantId',
+      );
+
+    const hasPersonalization =
+      Object.prototype.hasOwnProperty.call(
+        input,
+        'personalization',
+      );
+
+    if (
+      !hasQuantity &&
+      !hasVariant &&
+      !hasPersonalization
+    ) {
+      throw new BadRequestException(
+        'At least one cart item field must be provided',
+      );
+    }
+
+    if (
+      hasQuantity &&
+      input.quantity !== undefined &&
+      input.quantity <= 0
+    ) {
       await this.removeOwnedItem(
         itemId,
         userId,
@@ -299,7 +332,14 @@ export class CartsService {
       return null;
     }
 
-    this.assertQuantity(quantity);
+    if (
+      hasQuantity &&
+      input.quantity !== undefined
+    ) {
+      this.assertQuantity(
+        input.quantity,
+      );
+    }
 
     const owned = await this.findOwnedItem(
       itemId,
@@ -313,33 +353,315 @@ export class CartsService {
       );
     }
 
-    const [updated] = await this.db
-      .update(cartItems)
-      .set({
-        quantity,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(
-            cartItems.id,
-            itemId,
+    return this.db.transaction(async (tx) => {
+      // Lock the cart first so two edits on the same cart are serialized.
+      const [cart] = await tx
+        .select()
+        .from(carts)
+        .where(
+          and(
+            eq(
+              carts.id,
+              owned.cartId,
+            ),
+            eq(
+              carts.status,
+              'active',
+            ),
           ),
-          eq(
-            cartItems.cartId,
-            owned.cartId,
-          ),
-        ),
-      )
-      .returning();
+        )
+        .for('update')
+        .limit(1);
 
-    if (!updated) {
-      throw new NotFoundException(
-        'Cart item not found',
+      if (!cart) {
+        throw new NotFoundException(
+          'Active cart not found',
+        );
+      }
+
+      const [currentItem] = await tx
+        .select()
+        .from(cartItems)
+        .where(
+          and(
+            eq(
+              cartItems.id,
+              itemId,
+            ),
+            eq(
+              cartItems.cartId,
+              owned.cartId,
+            ),
+          ),
+        )
+        .for('update')
+        .limit(1);
+
+      if (!currentItem) {
+        throw new NotFoundException(
+          'Cart item not found',
+        );
+      }
+
+      const [product] = await tx
+        .select()
+        .from(products)
+        .where(
+          and(
+            eq(
+              products.id,
+              currentItem.productId,
+            ),
+            eq(
+              products.isActive,
+              true,
+            ),
+          ),
+        )
+        .limit(1);
+
+      if (!product) {
+        throw new NotFoundException(
+          'Product not found or unavailable',
+        );
+      }
+
+      const effectiveVariantId =
+        hasVariant
+          ? input.variantId ?? null
+          : currentItem.variantId;
+
+      let variant:
+        | typeof productVariants.$inferSelect
+        | undefined;
+
+      if (effectiveVariantId) {
+        [variant] = await tx
+          .select()
+          .from(productVariants)
+          .where(
+            and(
+              eq(
+                productVariants.id,
+                effectiveVariantId,
+              ),
+              eq(
+                productVariants.productId,
+                currentItem.productId,
+              ),
+              eq(
+                productVariants.isActive,
+                true,
+              ),
+            ),
+          )
+          .limit(1);
+
+        if (!variant) {
+          throw new BadRequestException(
+            'Variant does not belong to this product or is unavailable',
+          );
+        }
+      } else {
+        const [activeVariant] = await tx
+          .select({
+            id: productVariants.id,
+          })
+          .from(productVariants)
+          .where(
+            and(
+              eq(
+                productVariants.productId,
+                currentItem.productId,
+              ),
+              eq(
+                productVariants.isActive,
+                true,
+              ),
+            ),
+          )
+          .limit(1);
+
+        if (activeVariant) {
+          throw new BadRequestException(
+            `A variant must be selected for "${product.name}"`,
+          );
+        }
+      }
+
+      const effectivePersonalization =
+        hasPersonalization
+          ? input.personalization ?? null
+          : currentItem.personalization;
+
+      if (
+        effectivePersonalization !== undefined &&
+        effectivePersonalization !== null &&
+        !product.isPersonalizable
+      ) {
+        throw new BadRequestException(
+          `Product "${product.name}" is not personalizable`,
+        );
+      }
+
+      const personalizationKey =
+        this.buildPersonalizationKey(
+          effectivePersonalization,
+        );
+
+      const effectiveQuantity =
+        input.quantity ??
+        currentItem.quantity;
+
+      this.assertQuantity(
+        effectiveQuantity,
       );
-    }
 
-    return updated;
+      const unitPriceCents =
+        variant?.priceCents ??
+        product.priceCents;
+
+      const matchingConditions = [
+        eq(
+          cartItems.cartId,
+          owned.cartId,
+        ),
+        eq(
+          cartItems.productId,
+          currentItem.productId,
+        ),
+        eq(
+          cartItems.personalizationKey,
+          personalizationKey,
+        ),
+        effectiveVariantId
+          ? eq(
+              cartItems.variantId,
+              effectiveVariantId,
+            )
+          : isNull(
+              cartItems.variantId,
+            ),
+      ];
+
+      const matchingItems = await tx
+        .select()
+        .from(cartItems)
+        .where(
+          and(
+            ...matchingConditions,
+          ),
+        );
+
+      const duplicateItem =
+        matchingItems.find(
+          (item) =>
+            item.id !==
+            currentItem.id,
+        );
+
+      if (duplicateItem) {
+        const mergedQuantity =
+          duplicateItem.quantity +
+          effectiveQuantity;
+
+        this.assertQuantity(
+          mergedQuantity,
+        );
+
+        const [merged] = await tx
+          .update(cartItems)
+          .set({
+            quantity:
+              mergedQuantity,
+            unitPriceCents,
+            selectedColorName:
+              variant?.colorName ?? null,
+            selectedColorHex:
+              variant?.colorHex ?? null,
+            personalization:
+              effectivePersonalization ?? null,
+            personalizationKey,
+            updatedAt: new Date(),
+          })
+          .where(
+            eq(
+              cartItems.id,
+              duplicateItem.id,
+            ),
+          )
+          .returning();
+
+        await tx
+          .delete(cartItems)
+          .where(
+            eq(
+              cartItems.id,
+              currentItem.id,
+            ),
+          );
+
+        return merged ?? null;
+      }
+
+      const [updated] = await tx
+        .update(cartItems)
+        .set({
+          quantity:
+            effectiveQuantity,
+          variantId:
+            variant?.id ?? null,
+          unitPriceCents,
+          selectedColorName:
+            variant?.colorName ?? null,
+          selectedColorHex:
+            variant?.colorHex ?? null,
+          personalization:
+            effectivePersonalization ?? null,
+          personalizationKey,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(
+              cartItems.id,
+              itemId,
+            ),
+            eq(
+              cartItems.cartId,
+              owned.cartId,
+            ),
+          ),
+        )
+        .returning();
+
+      if (!updated) {
+        throw new NotFoundException(
+          'Cart item not found',
+        );
+      }
+
+      return updated;
+    });
+  }
+
+  /**
+   * Backward-compatible quantity helper.
+   * Existing controller code can keep using this method until it is
+   * switched to updateOwnedItem().
+   */
+  async updateOwnedItemQuantity(
+    itemId: string,
+    quantity: number,
+    userId?: string,
+    sessionId?: string,
+  ) {
+    return this.updateOwnedItem(
+      itemId,
+      { quantity },
+      userId,
+      sessionId,
+    );
   }
 
   async removeOwnedItem(

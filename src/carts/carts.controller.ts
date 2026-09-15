@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
@@ -9,7 +10,6 @@ import {
   Req,
   Res,
   UseGuards,
-  Body,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
@@ -34,13 +34,17 @@ type RequestWithOptionalUser = FastifyRequest & {
 @Controller('carts')
 @UseGuards(OptionalJwtAuthGuard)
 export class CartsController {
-  constructor(private readonly cartsService: CartsService) {}
+  constructor(
+    private readonly cartsService: CartsService,
+  ) {}
 
   @Get()
   async getCart(
     @Req() req: RequestWithOptionalUser,
-    @Headers('x-session-id') sessionIdHeader: string | undefined,
-    @Res({ passthrough: true }) reply: FastifyReply,
+    @Headers('x-session-id')
+    sessionIdHeader: string | undefined,
+    @Res({ passthrough: true })
+    reply: FastifyReply,
   ) {
     const sessionId = this.resolveSessionId(
       req.user?.id,
@@ -53,9 +57,10 @@ export class CartsController {
       sessionId,
     );
 
-    const totals = await this.cartsService.calculateCartTotal(
-      cart.id,
-    );
+    const totals =
+      await this.cartsService.calculateCartTotal(
+        cart.id,
+      );
 
     return {
       cart: {
@@ -71,8 +76,10 @@ export class CartsController {
   async addItem(
     @Body() body: AddCartItemDto,
     @Req() req: RequestWithOptionalUser,
-    @Headers('x-session-id') sessionIdHeader: string | undefined,
-    @Res({ passthrough: true }) reply: FastifyReply,
+    @Headers('x-session-id')
+    sessionIdHeader: string | undefined,
+    @Res({ passthrough: true })
+    reply: FastifyReply,
   ) {
     const sessionId = this.resolveSessionId(
       req.user?.id,
@@ -93,9 +100,10 @@ export class CartsController {
       body.personalization,
     );
 
-    const totals = await this.cartsService.calculateCartTotal(
-      cart.id,
-    );
+    const totals =
+      await this.cartsService.calculateCartTotal(
+        cart.id,
+      );
 
     return {
       cart: {
@@ -112,8 +120,10 @@ export class CartsController {
     @Param('itemId') itemId: string,
     @Body() body: UpdateCartItemDto,
     @Req() req: RequestWithOptionalUser,
-    @Headers('x-session-id') sessionIdHeader: string | undefined,
-    @Res({ passthrough: true }) reply: FastifyReply,
+    @Headers('x-session-id')
+    sessionIdHeader: string | undefined,
+    @Res({ passthrough: true })
+    reply: FastifyReply,
   ) {
     const sessionId = this.resolveSessionId(
       req.user?.id,
@@ -121,9 +131,9 @@ export class CartsController {
       reply,
     );
 
-    await this.cartsService.updateOwnedItemQuantity(
+    await this.cartsService.updateOwnedItem(
       itemId,
-      body.quantity,
+      body,
       req.user?.id,
       sessionId,
     );
@@ -133,9 +143,10 @@ export class CartsController {
       sessionId,
     );
 
-    const totals = await this.cartsService.calculateCartTotal(
-      cart.id,
-    );
+    const totals =
+      await this.cartsService.calculateCartTotal(
+        cart.id,
+      );
 
     return {
       cart: {
@@ -151,8 +162,10 @@ export class CartsController {
   async removeItem(
     @Param('itemId') itemId: string,
     @Req() req: RequestWithOptionalUser,
-    @Headers('x-session-id') sessionIdHeader: string | undefined,
-    @Res({ passthrough: true }) reply: FastifyReply,
+    @Headers('x-session-id')
+    sessionIdHeader: string | undefined,
+    @Res({ passthrough: true })
+    reply: FastifyReply,
   ) {
     const sessionId = this.resolveSessionId(
       req.user?.id,
@@ -171,9 +184,10 @@ export class CartsController {
       sessionId,
     );
 
-    const totals = await this.cartsService.calculateCartTotal(
-      cart.id,
-    );
+    const totals =
+      await this.cartsService.calculateCartTotal(
+        cart.id,
+      );
 
     return {
       cart: {
@@ -188,8 +202,10 @@ export class CartsController {
   @Delete()
   async clearCart(
     @Req() req: RequestWithOptionalUser,
-    @Headers('x-session-id') sessionIdHeader: string | undefined,
-    @Res({ passthrough: true }) reply: FastifyReply,
+    @Headers('x-session-id')
+    sessionIdHeader: string | undefined,
+    @Res({ passthrough: true })
+    reply: FastifyReply,
   ) {
     const sessionId = this.resolveSessionId(
       req.user?.id,
