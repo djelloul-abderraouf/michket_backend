@@ -9,6 +9,7 @@ import { CategoriesModule } from '../categories/categories.module';
 import { OrdersModule } from '../orders/orders.module';
 import { UsersModule } from '../users/users.module';
 import { MediaModule } from '../media/media.module';
+import { DeliveryModule } from '../delivery/delivery.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { MediaModule } from '../media/media.module';
     OrdersModule,
     UsersModule,
     MediaModule,
+    DeliveryModule,
   ],
   controllers: [AdminController],
   providers: [AdminService],

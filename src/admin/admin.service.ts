@@ -37,6 +37,13 @@ import { cartItems } from '../database/schema/carts';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { OrdersService } from '../orders/orders.service';
 import { MediaService } from '../media/media.service';
+import { DeliveryService } from '../delivery/delivery.service';
+
+type DbTransaction = Parameters<
+  Parameters<
+    NodePgDatabase<typeof schema>['transaction']
+  >[0]
+>[0];
 
 type OrderStatus =
   | 'pending'
@@ -186,6 +193,51 @@ export type CreateAdminPromotionInput = {
 export type UpdateAdminPromotionInput =
   Partial<CreateAdminPromotionInput>;
 
+type PaymentStatus =
+  | 'pending'
+  | 'paid'
+  | 'failed'
+  | 'refunded';
+
+type DeliveryType = 'home' | 'office';
+
+export type UpdateAdminOrderInput = {
+  firstName?: string;
+  lastName?: string;
+  phone?: string;
+  email?: string | null;
+
+  addressLine1?: string;
+  addressLine2?: string | null;
+
+  wilayaCode?: number;
+  communeId?: number;
+  deliveryType?: DeliveryType;
+
+  deliveryOfficeId?: string | null;
+  deliveryOfficeName?: string | null;
+
+  notes?: string | null;
+  promoCode?: string | null;
+
+  paymentMethod?: string;
+  paymentStatus?: PaymentStatus;
+
+  deliveryFeeCents?: number;
+  discountCents?: number;
+};
+
+export type CreateAdminOrderItemInput = {
+  productId: string;
+  variantId?: string | null;
+  quantity: number;
+  unitPriceCents: number;
+  personalization?: Record<string, unknown> | null;
+};
+
+export type UpdateAdminOrderItemInput =
+  Partial<CreateAdminOrderItemInput>;
+
 const ORDER_STATUSES: readonly OrderStatus[] = [
   'pending',
   'confirmed',
@@ -207,6 +259,7 @@ export class AdminService {
     private readonly db: NodePgDatabase<typeof schema>,
     private readonly ordersService: OrdersService,
     private readonly mediaService: MediaService,
+    private readonly deliveryService: DeliveryService,
   ) {}
 
   async getDashboard() {
@@ -340,6 +393,670 @@ export class AdminService {
         totalPages: Math.ceil(total / safeLimit),
       },
     };
+  }
+
+  async updateOrder(
+    orderId: string,
+    input: UpdateAdminOrderInput,
+  ) {
+    const [currentOrder] = await this.db
+      .select()
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .limit(1);
+
+    if (!currentOrder) {
+      throw new NotFoundException('Order not found');
+    }
+
+    const deliverySelectionChanged =
+      input.wilayaCode !== undefined ||
+      input.communeId !== undefined ||
+      input.deliveryType !== undefined;
+
+    let resolvedDelivery:
+      | {
+          wilayaCode: number;
+          wilayaName: string;
+          commune: string;
+          deliveryType: DeliveryType;
+          deliveryFeeCents: number;
+        }
+      | null = null;
+
+    if (deliverySelectionChanged) {
+      const effectiveWilayaCode =
+        input.wilayaCode ?? currentOrder.wilayaCode;
+
+      if (
+        input.wilayaCode !== undefined &&
+        input.wilayaCode !== currentOrder.wilayaCode &&
+        input.communeId === undefined
+      ) {
+        throw new BadRequestException(
+          'communeId is required when changing the wilaya',
+        );
+      }
+
+      const effectiveDeliveryType =
+        input.deliveryType ??
+        (currentOrder.deliveryType as DeliveryType);
+
+      const [yalidineWilayas, yalidineCommunes] =
+        await Promise.all([
+          this.deliveryService.getWilayas(),
+          this.deliveryService.getCommunes(
+            effectiveWilayaCode,
+          ),
+        ]);
+
+      const authoritativeWilaya =
+        yalidineWilayas.find(
+          (wilaya) =>
+            wilaya.code === effectiveWilayaCode,
+        );
+
+      if (!authoritativeWilaya) {
+        throw new BadRequestException(
+          'Selected wilaya is not recognized by Yalidine',
+        );
+      }
+
+      if (!authoritativeWilaya.available) {
+        throw new BadRequestException(
+          'Delivery is not available for the selected wilaya',
+        );
+      }
+
+      const normalizedCurrentCommune =
+        currentOrder.commune.trim().toLowerCase();
+
+      const authoritativeCommune =
+        input.communeId !== undefined
+          ? yalidineCommunes.find(
+              (commune) =>
+                commune.id === input.communeId,
+            )
+          : yalidineCommunes.find(
+              (commune) =>
+                commune.name
+                  .trim()
+                  .toLowerCase() ===
+                normalizedCurrentCommune,
+            );
+
+      if (!authoritativeCommune) {
+        throw new BadRequestException(
+          input.communeId !== undefined
+            ? 'Selected commune does not belong to the selected wilaya'
+            : 'Current commune could not be resolved by Yalidine. Select the commune again.',
+        );
+      }
+
+      if (!authoritativeCommune.available) {
+        throw new BadRequestException(
+          'Delivery is not available for the selected commune',
+        );
+      }
+
+      if (
+        effectiveDeliveryType === 'office' &&
+        !authoritativeCommune.hasStopDesk
+      ) {
+        throw new BadRequestException(
+          'Stop-desk delivery is not available for the selected commune',
+        );
+      }
+
+      const deliveryFeeCents =
+        input.deliveryFeeCents !== undefined
+          ? input.deliveryFeeCents
+          : (
+              await this.deliveryService.calculateRate(
+                effectiveWilayaCode,
+                effectiveDeliveryType,
+                authoritativeCommune.id,
+              )
+            ).amountCents;
+
+      resolvedDelivery = {
+        wilayaCode: effectiveWilayaCode,
+        wilayaName: authoritativeWilaya.name,
+        commune: authoritativeCommune.name,
+        deliveryType: effectiveDeliveryType,
+        deliveryFeeCents,
+      };
+    }
+
+    return this.db.transaction(async (tx) => {
+      const [lockedOrder] = await tx
+        .select()
+        .from(orders)
+        .where(eq(orders.id, orderId))
+        .for('update')
+        .limit(1);
+
+      if (!lockedOrder) {
+        throw new NotFoundException('Order not found');
+      }
+
+      const [subtotalRow] = await tx
+        .select({
+          subtotalCents: sql<number>`
+            coalesce(sum(${orderItems.totalPriceCents}), 0)::int
+          `,
+        })
+        .from(orderItems)
+        .where(eq(orderItems.orderId, orderId));
+
+      const subtotalCents =
+        subtotalRow?.subtotalCents ?? 0;
+
+      const deliveryFeeCents =
+        resolvedDelivery?.deliveryFeeCents ??
+        input.deliveryFeeCents ??
+        lockedOrder.deliveryFeeCents;
+
+      const discountCents =
+        input.discountCents ??
+        lockedOrder.discountCents;
+
+      if (
+        !Number.isInteger(deliveryFeeCents) ||
+        deliveryFeeCents < 0
+      ) {
+        throw new BadRequestException(
+          'Delivery fee must be a non-negative integer',
+        );
+      }
+
+      if (
+        !Number.isInteger(discountCents) ||
+        discountCents < 0
+      ) {
+        throw new BadRequestException(
+          'Discount must be a non-negative integer',
+        );
+      }
+
+      if (discountCents > subtotalCents) {
+        throw new BadRequestException(
+          'Discount cannot exceed the product subtotal',
+        );
+      }
+
+      const totalCents =
+        subtotalCents +
+        deliveryFeeCents -
+        discountCents;
+
+      const updateData: Partial<
+        typeof orders.$inferInsert
+      > = {
+        subtotalCents,
+        deliveryFeeCents,
+        discountCents,
+        totalCents,
+        updatedAt: new Date(),
+      };
+
+      if (input.firstName !== undefined) {
+        updateData.firstName =
+          input.firstName.trim();
+      }
+
+      if (input.lastName !== undefined) {
+        updateData.lastName =
+          input.lastName.trim();
+      }
+
+      if (input.phone !== undefined) {
+        updateData.phone = input.phone.trim();
+      }
+
+      if (input.email !== undefined) {
+        updateData.email =
+          input.email?.trim() || null;
+      }
+
+      if (input.addressLine1 !== undefined) {
+        updateData.addressLine1 =
+          input.addressLine1.trim();
+      }
+
+      if (input.addressLine2 !== undefined) {
+        updateData.addressLine2 =
+          input.addressLine2?.trim() || null;
+      }
+
+      if (resolvedDelivery) {
+        updateData.wilayaCode =
+          resolvedDelivery.wilayaCode;
+        updateData.wilayaName =
+          resolvedDelivery.wilayaName.trim();
+        updateData.commune =
+          resolvedDelivery.commune.trim();
+        updateData.deliveryType =
+          resolvedDelivery.deliveryType;
+
+        if (
+          resolvedDelivery.deliveryType === 'office' &&
+          input.addressLine1 === undefined &&
+          (
+            lockedOrder.deliveryType !== 'office' ||
+            lockedOrder.wilayaCode !==
+              resolvedDelivery.wilayaCode ||
+            lockedOrder.commune !==
+              resolvedDelivery.commune
+          )
+        ) {
+          updateData.addressLine1 =
+            `Bureau Yalidine - ${resolvedDelivery.commune}`;
+        }
+
+        if (
+          resolvedDelivery.deliveryType === 'home' &&
+          lockedOrder.deliveryType === 'office' &&
+          input.addressLine1 === undefined
+        ) {
+          throw new BadRequestException(
+            'Address is required when switching from office delivery to home delivery',
+          );
+        }
+      }
+
+      const effectiveDeliveryType =
+        resolvedDelivery?.deliveryType ??
+        (lockedOrder.deliveryType as DeliveryType);
+
+      if (effectiveDeliveryType === 'home') {
+        updateData.deliveryOfficeId = null;
+        updateData.deliveryOfficeName = null;
+      } else {
+        if (
+          input.deliveryOfficeId !== undefined
+        ) {
+          updateData.deliveryOfficeId =
+            input.deliveryOfficeId?.trim() ||
+            null;
+        }
+
+        if (
+          input.deliveryOfficeName !== undefined
+        ) {
+          updateData.deliveryOfficeName =
+            input.deliveryOfficeName?.trim() ||
+            null;
+        }
+      }
+
+      if (input.notes !== undefined) {
+        updateData.notes =
+          input.notes?.trim() || null;
+      }
+
+      if (input.promoCode !== undefined) {
+        updateData.promoCode =
+          input.promoCode?.trim().toUpperCase() ||
+          null;
+      }
+
+      if (input.paymentMethod !== undefined) {
+        updateData.paymentMethod =
+          input.paymentMethod.trim();
+      }
+
+      if (input.paymentStatus !== undefined) {
+        updateData.paymentStatus =
+          input.paymentStatus;
+
+        if (input.paymentStatus === 'paid') {
+          updateData.paidAt =
+            lockedOrder.paidAt ?? new Date();
+        } else if (
+          input.paymentStatus === 'pending' ||
+          input.paymentStatus === 'failed'
+        ) {
+          updateData.paidAt = null;
+        }
+      }
+
+      await tx
+        .update(orders)
+        .set(updateData)
+        .where(eq(orders.id, orderId));
+
+      return this.getAdminOrderWithItems(
+        tx,
+        orderId,
+      );
+    });
+  }
+
+  async createOrderItem(
+    orderId: string,
+    input: CreateAdminOrderItemInput,
+  ) {
+    this.validateAdminOrderItemInput(input);
+
+    return this.db.transaction(async (tx) => {
+      const order =
+        await this.lockEditableOrderForItems(
+          tx,
+          orderId,
+        );
+
+      const snapshot =
+        await this.resolveAdminOrderItemSnapshot(
+          tx,
+          input.productId,
+          input.variantId ?? null,
+        );
+
+      await this.reserveAdminOrderItemStock(
+        tx,
+        snapshot.productId,
+        snapshot.variantId,
+        input.quantity,
+      );
+
+      const totalPriceCents =
+        input.unitPriceCents * input.quantity;
+
+      await tx.insert(orderItems).values({
+        orderId: order.id,
+        productId: snapshot.productId,
+        variantId: snapshot.variantId,
+
+        productName: snapshot.productName,
+        productSlug: snapshot.productSlug,
+        productImageUrl:
+          snapshot.productImageUrl,
+
+        variantName: snapshot.variantName,
+        variantSku: snapshot.variantSku,
+        colorName: snapshot.colorName,
+        colorHex: snapshot.colorHex,
+
+        quantity: input.quantity,
+        unitPriceCents: input.unitPriceCents,
+        totalPriceCents,
+
+        personalization:
+          input.personalization ?? null,
+      });
+
+      await this.recalculateAdminOrderTotals(
+        tx,
+        orderId,
+      );
+
+      return this.getAdminOrderWithItems(
+        tx,
+        orderId,
+      );
+    });
+  }
+
+  async updateOrderItem(
+    orderId: string,
+    itemId: string,
+    input: UpdateAdminOrderItemInput,
+  ) {
+    if (
+      input.quantity !== undefined ||
+      input.unitPriceCents !== undefined
+    ) {
+      this.validateAdminOrderItemInput({
+        productId:
+          input.productId ??
+          '00000000-0000-0000-0000-000000000000',
+        quantity: input.quantity ?? 1,
+        unitPriceCents:
+          input.unitPriceCents ?? 0,
+      });
+    }
+
+    if (input.personalization !== undefined) {
+      this.validateAdminPersonalization(
+        input.personalization,
+      );
+    }
+
+    return this.db.transaction(async (tx) => {
+      await this.lockEditableOrderForItems(
+        tx,
+        orderId,
+      );
+
+      const [item] = await tx
+        .select()
+        .from(orderItems)
+        .where(
+          and(
+            eq(orderItems.id, itemId),
+            eq(orderItems.orderId, orderId),
+          ),
+        )
+        .for('update')
+        .limit(1);
+
+      if (!item) {
+        throw new NotFoundException(
+          'Order item not found',
+        );
+      }
+
+      const productChanged =
+        input.productId !== undefined &&
+        input.productId !== item.productId;
+
+      const variantWasProvided =
+        Object.prototype.hasOwnProperty.call(
+          input,
+          'variantId',
+        );
+
+      const variantChanged =
+        variantWasProvided &&
+        (input.variantId ?? null) !==
+          item.variantId;
+
+      const newQuantity =
+        input.quantity ?? item.quantity;
+
+      let snapshot:
+        | Awaited<
+            ReturnType<
+              AdminService['resolveAdminOrderItemSnapshot']
+            >
+          >
+        | null = null;
+
+      let newProductId = item.productId;
+      let newVariantId = item.variantId;
+
+      if (productChanged || variantChanged) {
+        const requestedProductId =
+          input.productId ?? item.productId;
+
+        if (!requestedProductId) {
+          throw new BadRequestException(
+            'productId is required because the original product no longer exists',
+          );
+        }
+
+        const requestedVariantId =
+          productChanged && !variantWasProvided
+            ? null
+            : variantWasProvided
+              ? input.variantId ?? null
+              : item.variantId;
+
+        snapshot =
+          await this.resolveAdminOrderItemSnapshot(
+            tx,
+            requestedProductId,
+            requestedVariantId,
+          );
+
+        newProductId = snapshot.productId;
+        newVariantId = snapshot.variantId;
+      }
+
+      const inventoryChanged =
+        productChanged ||
+        variantChanged ||
+        newQuantity !== item.quantity;
+
+      if (inventoryChanged) {
+        await this.releaseAdminOrderItemStock(
+          tx,
+          item.productId,
+          item.variantId,
+          item.quantity,
+        );
+
+        await this.reserveAdminOrderItemStock(
+          tx,
+          newProductId,
+          newVariantId,
+          newQuantity,
+        );
+      }
+
+      const newUnitPriceCents =
+        input.unitPriceCents ??
+        (snapshot
+          ? snapshot.defaultUnitPriceCents
+          : item.unitPriceCents);
+
+      if (
+        !Number.isInteger(newUnitPriceCents) ||
+        newUnitPriceCents < 0
+      ) {
+        throw new BadRequestException(
+          'Unit price must be a non-negative integer',
+        );
+      }
+
+      const updateData: Partial<
+        typeof orderItems.$inferInsert
+      > = {
+        quantity: newQuantity,
+        unitPriceCents: newUnitPriceCents,
+        totalPriceCents:
+          newUnitPriceCents * newQuantity,
+      };
+
+      if (snapshot) {
+        updateData.productId =
+          snapshot.productId;
+        updateData.variantId =
+          snapshot.variantId;
+
+        updateData.productName =
+          snapshot.productName;
+        updateData.productSlug =
+          snapshot.productSlug;
+        updateData.productImageUrl =
+          snapshot.productImageUrl;
+
+        updateData.variantName =
+          snapshot.variantName;
+        updateData.variantSku =
+          snapshot.variantSku;
+        updateData.colorName =
+          snapshot.colorName;
+        updateData.colorHex =
+          snapshot.colorHex;
+      }
+
+      if (input.personalization !== undefined) {
+        updateData.personalization =
+          input.personalization ?? null;
+      }
+
+      await tx
+        .update(orderItems)
+        .set(updateData)
+        .where(
+          and(
+            eq(orderItems.id, itemId),
+            eq(orderItems.orderId, orderId),
+          ),
+        );
+
+      await this.recalculateAdminOrderTotals(
+        tx,
+        orderId,
+      );
+
+      return this.getAdminOrderWithItems(
+        tx,
+        orderId,
+      );
+    });
+  }
+
+  async deleteOrderItem(
+    orderId: string,
+    itemId: string,
+  ) {
+    return this.db.transaction(async (tx) => {
+      await this.lockEditableOrderForItems(
+        tx,
+        orderId,
+      );
+
+      const itemRows = await tx
+        .select()
+        .from(orderItems)
+        .where(eq(orderItems.orderId, orderId))
+        .for('update');
+
+      if (itemRows.length <= 1) {
+        throw new ConflictException(
+          'An order must contain at least one item',
+        );
+      }
+
+      const item = itemRows.find(
+        (row) => row.id === itemId,
+      );
+
+      if (!item) {
+        throw new NotFoundException(
+          'Order item not found',
+        );
+      }
+
+      await this.releaseAdminOrderItemStock(
+        tx,
+        item.productId,
+        item.variantId,
+        item.quantity,
+      );
+
+      await tx
+        .delete(orderItems)
+        .where(
+          and(
+            eq(orderItems.id, itemId),
+            eq(orderItems.orderId, orderId),
+          ),
+        );
+
+      await this.recalculateAdminOrderTotals(
+        tx,
+        orderId,
+      );
+
+      return this.getAdminOrderWithItems(
+        tx,
+        orderId,
+      );
+    });
   }
 
   async updateOrderStatus(
@@ -3446,6 +4163,412 @@ export class AdminService {
     }
 
     return updated;
+  }
+
+  private async getAdminOrderWithItems(
+    tx: DbTransaction,
+    orderId: string,
+  ) {
+    const [order] = await tx
+      .select()
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .limit(1);
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    const items = await tx
+      .select()
+      .from(orderItems)
+      .where(eq(orderItems.orderId, orderId))
+      .orderBy(
+        asc(orderItems.createdAt),
+        asc(orderItems.id),
+      );
+
+    const {
+      guestAccessTokenHash: _guestAccessTokenHash,
+      ...safeOrder
+    } = order;
+
+    return {
+      ...safeOrder,
+      items,
+    };
+  }
+
+  private async lockEditableOrderForItems(
+    tx: DbTransaction,
+    orderId: string,
+  ) {
+    const [order] = await tx
+      .select()
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .for('update')
+      .limit(1);
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    if (
+      order.status !== 'pending' &&
+      order.status !== 'confirmed' &&
+      order.status !== 'processing'
+    ) {
+      throw new ConflictException(
+        'Order items can only be edited before the order is shipped',
+      );
+    }
+
+    return order;
+  }
+
+  private validateAdminOrderItemInput(
+    input: {
+      productId: string;
+      quantity: number;
+      unitPriceCents: number;
+      personalization?: Record<string, unknown> | null;
+    },
+  ): void {
+    if (
+      !Number.isInteger(input.quantity) ||
+      input.quantity < 1 ||
+      input.quantity > 99
+    ) {
+      throw new BadRequestException(
+        'Quantity must be an integer between 1 and 99',
+      );
+    }
+
+    if (
+      !Number.isInteger(input.unitPriceCents) ||
+      input.unitPriceCents < 0
+    ) {
+      throw new BadRequestException(
+        'Unit price must be a non-negative integer',
+      );
+    }
+
+    this.validateAdminPersonalization(
+      input.personalization,
+    );
+  }
+
+  private validateAdminPersonalization(
+    personalization:
+      | Record<string, unknown>
+      | null
+      | undefined,
+  ): void {
+    if (personalization == null) {
+      return;
+    }
+
+    let serialized: string;
+
+    try {
+      serialized = JSON.stringify(personalization);
+    } catch {
+      throw new BadRequestException(
+        'Personalization must be valid JSON',
+      );
+    }
+
+    if (
+      Buffer.byteLength(serialized, 'utf8') >
+      10_000
+    ) {
+      throw new BadRequestException(
+        'Personalization data is too large',
+      );
+    }
+  }
+
+  private async resolveAdminOrderItemSnapshot(
+    tx: DbTransaction,
+    productId: string,
+    variantId: string | null,
+  ) {
+    const [product] = await tx
+      .select()
+      .from(products)
+      .where(eq(products.id, productId))
+      .limit(1);
+
+    if (!product) {
+      throw new NotFoundException(
+        'Product not found',
+      );
+    }
+
+    let variant:
+      | typeof productVariants.$inferSelect
+      | null = null;
+
+    if (variantId) {
+      const [foundVariant] = await tx
+        .select()
+        .from(productVariants)
+        .where(
+          and(
+            eq(productVariants.id, variantId),
+            eq(
+              productVariants.productId,
+              productId,
+            ),
+          ),
+        )
+        .limit(1);
+
+      if (!foundVariant) {
+        throw new BadRequestException(
+          'Variant does not belong to this product',
+        );
+      }
+
+      variant = foundVariant;
+    } else {
+      const [existingVariant] = await tx
+        .select({
+          id: productVariants.id,
+        })
+        .from(productVariants)
+        .where(
+          eq(
+            productVariants.productId,
+            productId,
+          ),
+        )
+        .limit(1);
+
+      if (existingVariant) {
+        throw new BadRequestException(
+          'A variant must be selected for this product',
+        );
+      }
+    }
+
+    let productImageUrl: string | null = null;
+
+    if (variant) {
+      const [variantImage] = await tx
+        .select({
+          url: productImages.url,
+        })
+        .from(productImages)
+        .where(
+          and(
+            eq(
+              productImages.productId,
+              productId,
+            ),
+            eq(
+              productImages.variantId,
+              variant.id,
+            ),
+          ),
+        )
+        .orderBy(
+          desc(productImages.isPrimary),
+          asc(productImages.sortOrder),
+          asc(productImages.createdAt),
+        )
+        .limit(1);
+
+      productImageUrl =
+        variantImage?.url ?? null;
+    }
+
+    if (!productImageUrl) {
+      const [fallbackImage] = await tx
+        .select({
+          url: productImages.url,
+        })
+        .from(productImages)
+        .where(
+          eq(
+            productImages.productId,
+            productId,
+          ),
+        )
+        .orderBy(
+          desc(productImages.isPrimary),
+          asc(productImages.sortOrder),
+          asc(productImages.createdAt),
+        )
+        .limit(1);
+
+      productImageUrl =
+        fallbackImage?.url ?? null;
+    }
+
+    return {
+      productId: product.id,
+      variantId: variant?.id ?? null,
+
+      productName: product.name,
+      productSlug: product.slug,
+      productImageUrl,
+
+      variantName: variant?.name ?? null,
+      variantSku: variant?.sku ?? null,
+      colorName: variant?.colorName ?? null,
+      colorHex: variant?.colorHex ?? null,
+
+      defaultUnitPriceCents:
+        variant?.priceCents ??
+        product.priceCents,
+    };
+  }
+
+  private async reserveAdminOrderItemStock(
+    tx: DbTransaction,
+    productId: string | null,
+    variantId: string | null,
+    quantity: number,
+  ): Promise<void> {
+    if (!productId) {
+      return;
+    }
+
+    const condition = variantId
+      ? and(
+          eq(inventory.productId, productId),
+          eq(inventory.variantId, variantId),
+        )
+      : and(
+          eq(inventory.productId, productId),
+          isNull(inventory.variantId),
+        );
+
+    const [stock] = await tx
+      .select()
+      .from(inventory)
+      .where(condition)
+      .for('update')
+      .limit(1);
+
+    if (!stock?.trackInventory) {
+      return;
+    }
+
+    const available =
+      stock.quantity - stock.reserved;
+
+    if (available < quantity) {
+      throw new BadRequestException(
+        'Insufficient stock for the selected order item',
+      );
+    }
+
+    await tx
+      .update(inventory)
+      .set({
+        reserved:
+          stock.reserved + quantity,
+        updatedAt: new Date(),
+      })
+      .where(eq(inventory.id, stock.id));
+  }
+
+  private async releaseAdminOrderItemStock(
+    tx: DbTransaction,
+    productId: string | null,
+    variantId: string | null,
+    quantity: number,
+  ): Promise<void> {
+    if (!productId) {
+      return;
+    }
+
+    const condition = variantId
+      ? and(
+          eq(inventory.productId, productId),
+          eq(inventory.variantId, variantId),
+        )
+      : and(
+          eq(inventory.productId, productId),
+          isNull(inventory.variantId),
+        );
+
+    const [stock] = await tx
+      .select()
+      .from(inventory)
+      .where(condition)
+      .for('update')
+      .limit(1);
+
+    if (!stock?.trackInventory) {
+      return;
+    }
+
+    if (stock.reserved < quantity) {
+      throw new ConflictException(
+        'Inventory reservation is inconsistent for this order item',
+      );
+    }
+
+    await tx
+      .update(inventory)
+      .set({
+        reserved:
+          stock.reserved - quantity,
+        updatedAt: new Date(),
+      })
+      .where(eq(inventory.id, stock.id));
+  }
+
+  private async recalculateAdminOrderTotals(
+    tx: DbTransaction,
+    orderId: string,
+  ): Promise<void> {
+    const [order] = await tx
+      .select()
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .for('update')
+      .limit(1);
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    const [subtotalRow] = await tx
+      .select({
+        subtotalCents: sql<number>`
+          coalesce(sum(${orderItems.totalPriceCents}), 0)::int
+        `,
+      })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, orderId));
+
+    const subtotalCents =
+      subtotalRow?.subtotalCents ?? 0;
+
+    const discountCents = Math.min(
+      order.discountCents,
+      subtotalCents,
+    );
+
+    const totalCents =
+      subtotalCents +
+      order.deliveryFeeCents -
+      discountCents;
+
+    await tx
+      .update(orders)
+      .set({
+        subtotalCents,
+        discountCents,
+        totalCents,
+        updatedAt: new Date(),
+      })
+      .where(eq(orders.id, orderId));
   }
 
   private async assertCategorySlugAvailable(

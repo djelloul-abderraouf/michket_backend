@@ -24,6 +24,7 @@ import {
   AdminPaginationDto,
   ChangeUserRoleDto,
   CreateAdminCategoryDto,
+  CreateAdminOrderItemDto,
   CreateAdminProductDto,
   CreateAdminProductImageDto,
   CreateAdminProductVariantDto,
@@ -33,6 +34,8 @@ import {
   ReorderCategoryHeroImagesDto,
   UpdateAdminCategoryDto,
   UpdateAdminInventoryDto,
+  UpdateAdminOrderDto,
+  UpdateAdminOrderItemDto,
   UpdateAdminProductDto,
   UpdateAdminProductImageDto,
   UpdateAdminProductVariantDto,
@@ -83,6 +86,68 @@ export class AdminController {
       query.page,
       query.limit,
       query.status,
+    );
+  }
+
+  @Put('orders/:id')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Update editable order fields',
+  })
+  updateOrder(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: UpdateAdminOrderDto,
+  ) {
+    return this.adminService.updateOrder(
+      id,
+      body,
+    );
+  }
+
+  @Post('orders/:id/items')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Add an item to an order',
+  })
+  createOrderItem(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: CreateAdminOrderItemDto,
+  ) {
+    return this.adminService.createOrderItem(
+      id,
+      body,
+    );
+  }
+
+  @Put('orders/:id/items/:itemId')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Update an order item',
+  })
+  updateOrderItem(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('itemId', ParseUUIDPipe) itemId: string,
+    @Body() body: UpdateAdminOrderItemDto,
+  ) {
+    return this.adminService.updateOrderItem(
+      id,
+      itemId,
+      body,
+    );
+  }
+
+  @Delete('orders/:id/items/:itemId')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Delete an order item',
+  })
+  deleteOrderItem(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('itemId', ParseUUIDPipe) itemId: string,
+  ) {
+    return this.adminService.deleteOrderItem(
+      id,
+      itemId,
     );
   }
 

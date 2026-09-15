@@ -5,6 +5,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsBoolean,
+  IsEmail,
   IsIn,
   IsInt,
   IsISO8601,
@@ -14,6 +15,7 @@ import {
   IsUrl,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
   Min,
   MinLength,
@@ -33,6 +35,18 @@ const ORDER_STATUSES = [
   'delivered',
   'cancelled',
   'refunded',
+] as const;
+
+const PAYMENT_STATUSES = [
+  'pending',
+  'paid',
+  'failed',
+  'refunded',
+] as const;
+
+const DELIVERY_TYPES = [
+  'home',
+  'office',
 ] as const;
 
 const PRODUCT_BADGES = [
@@ -83,6 +97,153 @@ export class UpdateOrderStatusDto {
   @MaxLength(500)
   reason?: string;
 }
+
+/**
+ * Editable business fields for an existing order.
+ *
+ * Intentionally NOT editable here:
+ * - id / reference / userId
+ * - guestAccessTokenHash
+ * - subtotalCents / totalCents (recalculated by the service)
+ * - createdAt / updatedAt
+ * - status (keeps using UpdateOrderStatusDto so transition rules stay enforced)
+ * - paidAt / shippedAt / deliveredAt / cancelledAt (managed by backend rules)
+ *
+ * communeId is accepted only as an admin input so the backend can resolve the
+ * authoritative Yalidine commune name. The orders table keeps the commune name
+ * snapshot, not the Yalidine commune id.
+ */
+export class UpdateAdminOrderDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(100)
+  firstName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(100)
+  lastName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(6)
+  @MaxLength(30)
+  phone?: string;
+
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(254)
+  email?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  addressLine1?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  addressLine2?: string | null;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(58)
+  wilayaCode?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  communeId?: number;
+
+  @IsOptional()
+  @IsIn(DELIVERY_TYPES)
+  deliveryType?: (typeof DELIVERY_TYPES)[number];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  deliveryOfficeId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  deliveryOfficeName?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  notes?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  promoCode?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(50)
+  paymentMethod?: string;
+
+  @IsOptional()
+  @IsIn(PAYMENT_STATUSES)
+  paymentStatus?: (typeof PAYMENT_STATUSES)[number];
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  deliveryFeeCents?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  discountCents?: number;
+}
+
+/**
+ * Add a new line to an existing order.
+ * Product/variant snapshot fields are resolved server-side from the catalogue.
+ */
+export class CreateAdminOrderItemDto {
+  @IsUUID()
+  productId!: string;
+
+  @IsOptional()
+  @IsUUID()
+  variantId?: string | null;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(99)
+  quantity!: number;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  unitPriceCents!: number;
+
+  @IsOptional()
+  @IsObject()
+  personalization?: Record<string, unknown> | null;
+}
+
+/**
+ * Edit an existing order line.
+ * The service will preserve/rebuild immutable snapshot fields as needed and
+ * recalculate line/order totals.
+ */
+export class UpdateAdminOrderItemDto extends PartialType(
+  CreateAdminOrderItemDto,
+) {}
 
 export class AdminInventoryDto {
   @Type(() => Number)
