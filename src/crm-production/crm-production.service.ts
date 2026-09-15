@@ -27,53 +27,58 @@ export class CrmProductionService extends CrmBaseService {
   }
 
   async findAll() {
-    return this.findAllEntities(crmProductionJobs);
+    const jobs = await this.findAllEntities<any>(crmProductionJobs);
+    return jobs.map((job) => this.serialize(job));
   }
 
   async findById(id: string) {
-    return this.findEntityById(crmProductionJobs, id, 'Production Job');
+    const job = await this.findEntityById<any>(crmProductionJobs, id, 'Production Job');
+    return this.serialize(job);
   }
 
   async create(dto: CreateCrmProductionJobDto) {
     const [job] = await this.db
       .insert(crmProductionJobs)
       .values({
-        id: dto.id,
+        id: dto.id || this.newId(),
         orderId: dto.orderId,
         orderRef: dto.orderRef,
         clientName: dto.clientName,
         productSummary: dto.productSummary,
-        status: dto.status,
+        status: dto.status ?? 'en_attente',
       })
       .returning();
 
-    return job;
+    return this.serialize(job);
   }
 
   async update(id: string, dto: UpdateCrmProductionJobDto) {
     const job = await this.findById(id) as any;
 
-    const updateData: any = {
-      ...dto,
-      updatedAt: new Date(),
-    };
-
-    // Auto-set timestamps based on status
-    if (dto.status === 'en_cours' && !job.startedAt) {
-      updateData.startedAt = new Date();
-    }
-
-    if (dto.status === 'termine' && !job.finishedAt) {
-      updateData.finishedAt = new Date();
-    }
-
     const [updatedJob] = await this.db
       .update(crmProductionJobs)
-      .set(updateData)
+      .set(
+        this.omitUndefined({
+          orderId: dto.orderId,
+          orderRef: dto.orderRef,
+          clientName: dto.clientName,
+          productSummary: dto.productSummary,
+          status: dto.status,
+          startedAt:
+            dto.status === 'en_cours' && !job.startedAt
+              ? new Date()
+              : undefined,
+          finishedAt:
+            dto.status === 'termine' && !job.finishedAt
+              ? new Date()
+              : undefined,
+          updatedAt: new Date(),
+        }),
+      )
       .where(eq(crmProductionJobs.id, id))
       .returning();
 
-    return updatedJob;
+    return this.serialize(updatedJob);
   }
 
   async delete(id: string) {
@@ -95,5 +100,14 @@ export class CrmProductionService extends CrmBaseService {
       .from(crmProductionJobs)
       .where(eq(crmProductionJobs.status, status))
       .orderBy(desc(crmProductionJobs.createdAt));
+  }
+
+  private serialize(job: any) {
+    return {
+      ...job,
+      startedAt: this.toIso(job.startedAt),
+      finishedAt: this.toIso(job.finishedAt),
+      createdAt: this.toIso(job.createdAt) ?? new Date().toISOString(),
+    };
   }
 }

@@ -12,10 +12,10 @@ import {
 } from '@nestjs/swagger';
 
 export class CreateCrmProjectDto {
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  id!: string;
+  id?: string;
 
   @ApiProperty()
   @IsString()
@@ -24,9 +24,10 @@ export class CreateCrmProjectDto {
   @MaxLength(200)
   name!: string;
 
-  @ApiProperty({ enum: ['actif', 'termine'] })
+  @ApiPropertyOptional({ enum: ['actif', 'termine'] })
+  @IsOptional()
   @IsEnum(['actif', 'termine'])
-  status!: 'actif' | 'termine';
+  status?: 'actif' | 'termine';
 }
 
 export class UpdateCrmProjectDto {

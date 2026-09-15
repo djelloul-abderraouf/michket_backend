@@ -2,9 +2,14 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { createClient } from '@supabase/supabase-js';
 import {
   and,
+  desc,
   eq,
   ne,
 } from 'drizzle-orm';
@@ -17,6 +22,8 @@ import {
 } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { DeliveryService } from '../delivery/delivery.service';
+import { AuthService } from '../auth/auth.service';
+import { CRM_STAFF_ROLES } from '../auth/crm-role-map';
 
 type ProfileUpdate = {
   firstName?: string;
@@ -44,6 +51,8 @@ export class UsersService {
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
     private readonly deliveryService: DeliveryService,
+    private readonly configService: ConfigService,
+    private readonly authService: AuthService,
   ) {}
 
   async findById(id: string) {
@@ -64,6 +73,149 @@ export class UsersService {
       .limit(1);
 
     return user ?? null;
+  }
+
+  async findAllForCrm() {
+    return this.db
+      .select({
+        id: users.id,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        phone: users.phone,
+        role: users.role,
+        isActive: users.isActive,
+        createdAt: users.createdAt,
+        updatedAt: users.updatedAt,
+      })
+      .from(users)
+      .orderBy(desc(users.createdAt));
+  }
+
+  async updateCrmUser(
+    id: string,
+    data: {
+      role?: typeof users.$inferSelect['role'];
+      isActive?: boolean;
+      firstName?: string;
+      lastName?: string;
+      phone?: string;
+    },
+  ) {
+    const existing = await this.findById(id);
+    if (!existing) {
+      throw new NotFoundException('User not found');
+    }
+
+    const [updated] = await this.db
+      .update(users)
+      .set({
+        ...(data.role !== undefined ? { role: data.role } : {}),
+        ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+        ...(data.firstName !== undefined ? { firstName: data.firstName } : {}),
+        ...(data.lastName !== undefined ? { lastName: data.lastName } : {}),
+        ...(data.phone !== undefined ? { phone: data.phone } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, id))
+      .returning({
+        id: users.id,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        phone: users.phone,
+        role: users.role,
+        isActive: users.isActive,
+        createdAt: users.createdAt,
+        updatedAt: users.updatedAt,
+      });
+
+    this.authService.invalidateUserCache(id);
+    return updated;
+  }
+
+  async createCrmStaff(data: {
+    email: string;
+    password: string;
+    firstName?: string;
+    lastName?: string;
+    phone?: string;
+    role: typeof users.$inferSelect['role'];
+  }) {
+    if (!CRM_STAFF_ROLES.includes(data.role as (typeof CRM_STAFF_ROLES)[number])) {
+      throw new BadRequestException('Role CRM invalide');
+    }
+
+    const email = data.email.trim().toLowerCase();
+    const existing = await this.findByEmail(email);
+    if (existing) {
+      throw new ConflictException('Un utilisateur avec cet email existe deja');
+    }
+
+    const supabase = createClient(
+      this.configService.getOrThrow<string>('SUPABASE_URL'),
+      this.configService.getOrThrow<string>('SUPABASE_SECRET_KEY'),
+      {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        },
+      },
+    );
+
+    const { data: created, error } = await supabase.auth.admin.createUser({
+      email,
+      password: data.password,
+      email_confirm: true,
+      user_metadata: {
+        first_name: data.firstName ?? '',
+        last_name: data.lastName ?? '',
+      },
+    });
+
+    if (error || !created.user) {
+      throw new BadRequestException(
+        error?.message || 'Impossible de creer le compte Auth',
+      );
+    }
+
+    const [user] = await this.db
+      .insert(users)
+      .values({
+        id: created.user.id,
+        email,
+        firstName: data.firstName?.trim() || null,
+        lastName: data.lastName?.trim() || null,
+        phone: data.phone?.trim() || null,
+        role: data.role,
+        isActive: true,
+      })
+      .onConflictDoUpdate({
+        target: users.id,
+        set: {
+          email,
+          firstName: data.firstName?.trim() || null,
+          lastName: data.lastName?.trim() || null,
+          phone: data.phone?.trim() || null,
+          role: data.role,
+          isActive: true,
+          updatedAt: new Date(),
+        },
+      })
+      .returning({
+        id: users.id,
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        phone: users.phone,
+        role: users.role,
+        isActive: users.isActive,
+        createdAt: users.createdAt,
+        updatedAt: users.updatedAt,
+      });
+
+    this.authService.invalidateUserCache(user.id);
+    return user;
   }
 
   async findByEmail(email: string) {

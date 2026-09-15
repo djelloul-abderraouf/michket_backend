@@ -24,15 +24,21 @@ export class CrmDashboardController {
     private readonly crmDashboardService: CrmDashboardService,
   ) {}
 
+  @Get('stats')
+  @ApiOperation({ summary: 'Get CRM dashboard statistics' })
+  @ApiResponse({ status: 200, description: 'Returns dashboard statistics' })
+  @CrmRoles('admin', 'commercial', 'confirmation', 'fabrication', 'preparation', 'livraison')
+  async getStats() {
+    return this.crmDashboardService.getEnhancedStats();
+  }
+
   @Get('summary')
   @ApiOperation({ summary: 'Get CRM summary statistics' })
   @ApiResponse({ status: 200, description: 'Returns summary statistics' })
-  @CrmRoles('admin', 'commercial', 'fabrication', 'preparation', 'livraison')
+  @CrmRoles('admin', 'commercial', 'confirmation', 'fabrication', 'preparation', 'livraison')
   async getSummary() {
     return this.crmDashboardService.getSummary();
   }
-
-
 
   @Get('deals')
   @ApiOperation({ summary: 'Get deal statistics' })
@@ -53,8 +59,24 @@ export class CrmDashboardController {
   @Get('tasks')
   @ApiOperation({ summary: 'Get task statistics' })
   @ApiResponse({ status: 200, description: 'Returns task statistics' })
-  @CrmRoles('admin', 'commercial', 'fabrication', 'preparation', 'livraison')
+  @CrmRoles('admin', 'commercial', 'confirmation', 'fabrication', 'preparation', 'livraison')
   async getTaskStatistics() {
     return this.crmDashboardService.getTaskStatistics();
+  }
+
+  @Get('enhanced-stats')
+  @ApiOperation({ summary: 'Get enhanced dashboard statistics with KPIs' })
+  @ApiResponse({ status: 200, description: 'Returns enhanced statistics with detailed KPIs' })
+  @CrmRoles('admin', 'commercial', 'confirmation', 'fabrication', 'preparation', 'livraison')
+  async getEnhancedStats() {
+    return this.crmDashboardService.getEnhancedStats();
+  }
+
+  @Get('kpis')
+  @ApiOperation({ summary: 'Get key performance indicators' })
+  @ApiResponse({ status: 200, description: 'Returns KPIs for dashboard' })
+  @CrmRoles('admin', 'commercial', 'confirmation', 'fabrication', 'preparation', 'livraison')
+  async getKPIs() {
+    return this.crmDashboardService.getKPIs();
   }
 }

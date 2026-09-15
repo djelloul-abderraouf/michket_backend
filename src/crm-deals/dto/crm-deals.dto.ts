@@ -12,12 +12,13 @@ import {
   ApiProperty,
   ApiPropertyOptional,
 } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 
 export class CreateCrmDealDto {
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  id!: string;
+  id?: string;
 
   @ApiProperty()
   @IsString()
@@ -37,17 +38,19 @@ export class CreateCrmDealDto {
   companyId?: string;
 
   @ApiProperty()
+  @Type(() => Number)
   @IsNumber()
   estimatedAmount!: number;
 
-  @ApiProperty({ enum: ['prospection', 'qualification', 'devis_envoye', 'negociation', 'gagnee', 'perdue'] })
+  @ApiPropertyOptional({ enum: ['prospection', 'qualification', 'devis_envoye', 'negociation', 'gagnee', 'perdue'] })
+  @IsOptional()
   @IsEnum(['prospection', 'qualification', 'devis_envoye', 'negociation', 'gagnee', 'perdue'])
-  stage!: 'prospection' | 'qualification' | 'devis_envoye' | 'negociation' | 'gagnee' | 'perdue';
+  stage?: 'prospection' | 'qualification' | 'devis_envoye' | 'negociation' | 'gagnee' | 'perdue';
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  ownerId!: string;
+  ownerId?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -75,6 +78,7 @@ export class UpdateCrmDealDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @Type(() => Number)
   @IsNumber()
   estimatedAmount?: number;
 

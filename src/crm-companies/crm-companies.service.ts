@@ -27,25 +27,27 @@ export class CrmCompaniesService extends CrmBaseService {
   }
 
   async findAll() {
-    return this.findAllEntities(crmCompanies);
+    const companies = await this.findAllEntities<any>(crmCompanies);
+    return companies.map((company) => this.serialize(company));
   }
 
   async findById(id: string) {
-    return this.findEntityById(crmCompanies, id, 'Company');
+    const company = await this.findEntityById<any>(crmCompanies, id, 'Company');
+    return this.serialize(company);
   }
 
   async create(dto: CreateCrmCompanyDto) {
     const [company] = await this.db
       .insert(crmCompanies)
       .values({
-        id: dto.id,
+        id: dto.id || this.newId(),
         name: dto.name,
         sector: dto.sector,
         commercialTerms: dto.commercialTerms,
       })
       .returning();
 
-    return company;
+    return this.serialize(company);
   }
 
   async update(id: string, dto: UpdateCrmCompanyDto) {
@@ -53,18 +55,30 @@ export class CrmCompaniesService extends CrmBaseService {
 
     const [updatedCompany] = await this.db
       .update(crmCompanies)
-      .set({
-        ...dto,
-        updatedAt: new Date(),
-      })
+      .set(
+        this.omitUndefined({
+          name: dto.name,
+          sector: dto.sector,
+          commercialTerms: dto.commercialTerms,
+          updatedAt: new Date(),
+        }),
+      )
       .where(eq(crmCompanies.id, id))
       .returning();
 
-    return updatedCompany;
+    return this.serialize(updatedCompany);
   }
 
   async delete(id: string) {
     await this.findById(id);
+    await this.db
+      .update(schema.crmContacts)
+      .set({ companyId: null, updatedAt: new Date() })
+      .where(eq(schema.crmContacts.companyId, id));
+    await this.db
+      .update(schema.crmDeals)
+      .set({ companyId: null, updatedAt: new Date() })
+      .where(eq(schema.crmDeals.companyId, id));
     await this.deleteEntityById(crmCompanies, id);
   }
 
@@ -74,5 +88,13 @@ export class CrmCompaniesService extends CrmBaseService {
       .from(crmCompanies)
       .where(eq(crmCompanies.sector, sector))
       .orderBy(desc(crmCompanies.createdAt));
+  }
+
+  private serialize(company: any) {
+    return {
+      ...company,
+      commercialTerms: company.commercialTerms ?? '',
+      createdAt: this.toIso(company.createdAt) ?? new Date().toISOString(),
+    };
   }
 }

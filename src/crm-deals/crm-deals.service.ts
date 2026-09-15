@@ -1,6 +1,7 @@
 import {
   Injectable,
   Inject,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   eq,
@@ -27,29 +28,36 @@ export class CrmDealsService extends CrmBaseService {
   }
 
   async findAll() {
-    return this.findAllEntities(crmDeals);
+    const deals = await this.findAllEntities<any>(crmDeals);
+    return deals.map((deal) => this.serialize(deal));
   }
 
   async findById(id: string) {
-    return this.findEntityById(crmDeals, id, 'Deal');
+    const deal = await this.findEntityById<any>(crmDeals, id, 'Deal');
+    return this.serialize(deal);
   }
 
-  async create(dto: CreateCrmDealDto) {
+  async create(dto: CreateCrmDealDto, user?: { id: string }) {
+    const ownerId = dto.ownerId || user?.id;
+    if (!ownerId) {
+      throw new BadRequestException('ownerId is required');
+    }
+
     const [deal] = await this.db
       .insert(crmDeals)
       .values({
-        id: dto.id,
+        id: dto.id || this.newId(),
         title: dto.title,
-        contactId: dto.contactId,
-        companyId: dto.companyId,
+        contactId: dto.contactId || null,
+        companyId: dto.companyId || null,
         estimatedAmount: dto.estimatedAmount.toString(),
-        stage: dto.stage,
-        ownerId: dto.ownerId,
+        stage: dto.stage ?? 'prospection',
+        ownerId,
         expectedCloseAt: dto.expectedCloseAt ? new Date(dto.expectedCloseAt) : null,
       })
       .returning();
 
-    return deal;
+    return this.serialize(deal);
   }
 
   async update(id: string, dto: UpdateCrmDealDto) {
@@ -57,20 +65,36 @@ export class CrmDealsService extends CrmBaseService {
 
     const [updatedDeal] = await this.db
       .update(crmDeals)
-      .set({
-        ...dto,
-        estimatedAmount: dto.estimatedAmount?.toString(),
-        expectedCloseAt: dto.expectedCloseAt ? new Date(dto.expectedCloseAt) : undefined,
-        updatedAt: new Date(),
-      })
+      .set(
+        this.omitUndefined({
+          title: dto.title,
+          contactId:
+            dto.contactId === undefined ? undefined : dto.contactId || null,
+          companyId:
+            dto.companyId === undefined ? undefined : dto.companyId || null,
+          estimatedAmount:
+            dto.estimatedAmount !== undefined
+              ? dto.estimatedAmount.toString()
+              : undefined,
+          stage: dto.stage,
+          ownerId: dto.ownerId,
+          expectedCloseAt: dto.expectedCloseAt
+            ? new Date(dto.expectedCloseAt)
+            : undefined,
+          updatedAt: new Date(),
+        }),
+      )
       .where(eq(crmDeals.id, id))
       .returning();
 
-    return updatedDeal;
+    return this.serialize(updatedDeal);
   }
 
   async delete(id: string) {
     await this.findById(id);
+    await this.db
+      .delete(schema.crmProposals)
+      .where(eq(schema.crmProposals.dealId, id));
     await this.deleteEntityById(crmDeals, id);
   }
 
@@ -104,5 +128,14 @@ export class CrmDealsService extends CrmBaseService {
       .from(crmDeals)
       .where(eq(crmDeals.companyId, companyId))
       .orderBy(desc(crmDeals.createdAt));
+  }
+
+  private serialize(deal: any) {
+    return {
+      ...deal,
+      estimatedAmount: this.toNumber(deal.estimatedAmount),
+      createdAt: this.toIso(deal.createdAt) ?? deal.createdAt,
+      expectedCloseAt: this.toIso(deal.expectedCloseAt) ?? deal.expectedCloseAt,
+    };
   }
 }

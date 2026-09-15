@@ -1,19 +1,21 @@
 import {
   IsString,
   IsNotEmpty,
+  IsOptional,
   MinLength,
   MaxLength,
   IsEnum,
 } from 'class-validator';
 import {
   ApiProperty,
+  ApiPropertyOptional,
 } from '@nestjs/swagger';
 
 export class CreateCrmActivityDto {
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  id!: string;
+  id?: string;
 
   @ApiProperty({ enum: ['appel', 'message', 'visite'] })
   @IsEnum(['appel', 'message', 'visite'])
@@ -24,10 +26,10 @@ export class CreateCrmActivityDto {
   @IsNotEmpty()
   target!: string;
 
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  ownerId!: string;
+  ownerId?: string;
 
   @ApiProperty()
   @IsString()

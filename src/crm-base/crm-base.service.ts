@@ -8,6 +8,7 @@ import {
   desc,
 } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { randomUUID } from 'crypto';
 
 import * as schema from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
@@ -18,6 +19,26 @@ export class CrmBaseService {
     @Inject(DATABASE_CONNECTION)
     protected readonly db: NodePgDatabase<typeof schema>,
   ) {}
+
+  protected newId(): string {
+    return randomUUID();
+  }
+
+  protected toNumber(value: string | number | null | undefined): number {
+    if (value === null || value === undefined) {
+      return 0;
+    }
+    const parsed = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  protected toIso(value: Date | string | null | undefined): string | undefined {
+    if (!value) {
+      return undefined;
+    }
+    const date = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+  }
 
   protected async findEntityById<T>(
     table: any,
@@ -52,5 +73,13 @@ export class CrmBaseService {
     id: string,
   ): Promise<void> {
     await this.db.delete(table).where(eq(table.id, id));
+  }
+
+  protected omitUndefined<T extends Record<string, unknown>>(
+    value: T,
+  ): Partial<T> {
+    return Object.fromEntries(
+      Object.entries(value).filter(([, entry]) => entry !== undefined),
+    ) as Partial<T>;
   }
 }

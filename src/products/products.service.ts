@@ -342,6 +342,237 @@ export class ProductsService {
     });
   }
 
+  async findAllForCrm() {
+    const productList = await this.db
+      .select({
+        id: products.id,
+        name: products.name,
+        slug: products.slug,
+        shortDescription: products.shortDescription,
+        categoryId: products.categoryId,
+        categorySlug: categories.slug,
+        categoryName: categories.name,
+        priceCents: products.priceCents,
+        isActive: products.isActive,
+        isPersonalizable: products.isPersonalizable,
+        createdAt: products.createdAt,
+      })
+      .from(products)
+      .leftJoin(categories, eq(products.categoryId, categories.id))
+      .orderBy(desc(products.createdAt));
+
+    return this.attachPrimaryImages(productList);
+  }
+
+  async setActive(id: string, isActive: boolean) {
+    const [product] = await this.db
+      .select({ id: products.id })
+      .from(products)
+      .where(eq(products.id, id))
+      .limit(1);
+
+    if (!product) {
+      throw new NotFoundException('Product not found');
+    }
+
+    const [updated] = await this.db
+      .update(products)
+      .set({
+        isActive,
+        updatedAt: new Date(),
+      })
+      .where(eq(products.id, id))
+      .returning({
+        id: products.id,
+        name: products.name,
+        isActive: products.isActive,
+      });
+
+    return updated;
+  }
+
+  async listCategoriesForCrm() {
+    return this.db
+      .select({
+        id: categories.id,
+        name: categories.name,
+        slug: categories.slug,
+        isActive: categories.isActive,
+      })
+      .from(categories)
+      .orderBy(asc(categories.sortOrder), asc(categories.name));
+  }
+
+  async createForCrm(data: {
+    name: string;
+    categoryId: string;
+    priceCents: number;
+    shortDescription?: string;
+    description?: string;
+    photoUrl?: string;
+    isActive?: boolean;
+    isPersonalizable?: boolean;
+  }) {
+    await this.assertCategory(data.categoryId);
+
+    const [created] = await this.db
+      .insert(products)
+      .values({
+        name: data.name.trim(),
+        slug: this.uniqueSlug(data.name),
+        shortDescription: data.shortDescription?.trim() || null,
+        description: data.description?.trim() || null,
+        categoryId: data.categoryId,
+        priceCents: data.priceCents,
+        isActive: data.isActive ?? true,
+        isPersonalizable: data.isPersonalizable ?? false,
+      })
+      .returning();
+
+    if (data.photoUrl?.trim()) {
+      await this.db.insert(productImages).values({
+        productId: created.id,
+        url: data.photoUrl.trim(),
+        altText: created.name,
+        isPrimary: true,
+        sortOrder: 0,
+      });
+    }
+
+    await this.db.insert(inventory).values({
+      productId: created.id,
+      quantity: 0,
+      reserved: 0,
+    });
+
+    return created;
+  }
+
+  async updateForCrm(
+    id: string,
+    data: {
+      name?: string;
+      categoryId?: string;
+      priceCents?: number;
+      shortDescription?: string;
+      description?: string;
+      photoUrl?: string;
+      isActive?: boolean;
+      isPersonalizable?: boolean;
+    },
+  ) {
+    const existing = await this.db
+      .select({ id: products.id })
+      .from(products)
+      .where(eq(products.id, id))
+      .limit(1);
+
+    if (!existing[0]) {
+      throw new NotFoundException('Product not found');
+    }
+
+    if (data.categoryId) {
+      await this.assertCategory(data.categoryId);
+    }
+
+    const patch: Record<string, unknown> = { updatedAt: new Date() };
+    if (data.name !== undefined) {
+      patch.name = data.name.trim();
+    }
+    if (data.categoryId !== undefined) {
+      patch.categoryId = data.categoryId;
+    }
+    if (data.priceCents !== undefined) {
+      patch.priceCents = data.priceCents;
+    }
+    if (data.shortDescription !== undefined) {
+      patch.shortDescription = data.shortDescription.trim() || null;
+    }
+    if (data.description !== undefined) {
+      patch.description = data.description.trim() || null;
+    }
+    if (data.isActive !== undefined) {
+      patch.isActive = data.isActive;
+    }
+    if (data.isPersonalizable !== undefined) {
+      patch.isPersonalizable = data.isPersonalizable;
+    }
+
+    const [updated] = await this.db
+      .update(products)
+      .set(patch)
+      .where(eq(products.id, id))
+      .returning();
+
+    if (data.photoUrl !== undefined) {
+      const url = data.photoUrl.trim();
+      const [primary] = await this.db
+        .select({ id: productImages.id })
+        .from(productImages)
+        .where(
+          and(
+            eq(productImages.productId, id),
+            eq(productImages.isPrimary, true),
+          ),
+        )
+        .limit(1);
+
+      if (url && primary) {
+        await this.db
+          .update(productImages)
+          .set({ url, altText: updated.name })
+          .where(eq(productImages.id, primary.id));
+      } else if (url) {
+        await this.db.insert(productImages).values({
+          productId: id,
+          url,
+          altText: updated.name,
+          isPrimary: true,
+          sortOrder: 0,
+        });
+      }
+    }
+
+    return updated;
+  }
+
+  async deleteForCrm(id: string) {
+    const [existing] = await this.db
+      .select({ id: products.id })
+      .from(products)
+      .where(eq(products.id, id))
+      .limit(1);
+
+    if (!existing) {
+      throw new NotFoundException('Product not found');
+    }
+
+    await this.db.delete(products).where(eq(products.id, id));
+  }
+
+  private async assertCategory(categoryId: string) {
+    const [category] = await this.db
+      .select({ id: categories.id })
+      .from(categories)
+      .where(eq(categories.id, categoryId))
+      .limit(1);
+
+    if (!category) {
+      throw new NotFoundException('Categorie introuvable');
+    }
+  }
+
+  private uniqueSlug(name: string) {
+    const base = name
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'produit';
+    return `${base}-${Date.now().toString(36)}`;
+  }
+
   private getSort(sort?: string) {
     switch (sort) {
       case 'price_asc':

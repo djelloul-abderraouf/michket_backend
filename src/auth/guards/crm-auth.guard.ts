@@ -1,63 +1,66 @@
 import {
   Injectable,
-  CanActivate,
   ExecutionContext,
   UnauthorizedException,
 } from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
-import { JwtService } from '@nestjs/jwt';
+import { AuthGuard } from '@nestjs/passport';
 import { Request } from 'express';
 
 import { AuthService } from '../auth.service';
 
+export type CrmRequestUser = {
+  id: string;
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  role: string;
+  roles: string[];
+};
+
 interface CrmRequest extends Request {
-  crmUser?: {
+  user?: {
     id: string;
     email: string;
     firstName?: string;
     lastName?: string;
-    role: 'customer' | 'admin' | 'super_admin';
-    roles: string[];
+    role: string;
   };
+  crmUser?: CrmRequestUser;
 }
 
 @Injectable()
-export class CrmAuthGuard implements CanActivate {
-  constructor(
-    private readonly reflector: Reflector,
-    private readonly jwtService: JwtService,
-    private readonly authService: AuthService,
-  ) {}
+export class CrmAuthGuard extends AuthGuard('jwt') {
+  constructor(private readonly authService: AuthService) {
+    super();
+  }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest<CrmRequest>();
-    const token = this.extractTokenFromHeader(request);
-
-    if (!token) {
+    const activated = await super.canActivate(context);
+    if (!activated) {
       throw new UnauthorizedException('CRM authentication required');
     }
 
-    try {
-      const payload = this.jwtService.verify(token);
-      const crmUser = await this.authService.validateCrmUser({
-        id: payload.sub,
-        email: payload.email,
-      });
+    const request = context.switchToHttp().getRequest<CrmRequest>();
+    const user = request.user;
 
-      if (!crmUser) {
-        throw new UnauthorizedException('CRM user not found or inactive');
-      }
-
-      // Attach CRM user to request
-      request.crmUser = crmUser;
-      return true;
-    } catch (error) {
-      throw new UnauthorizedException('Invalid CRM authentication');
+    if (!user?.id || !user?.email || !user.role) {
+      throw new UnauthorizedException('CRM authentication required');
     }
-  }
 
-  private extractTokenFromHeader(request: Request): string | undefined {
-    const [type, token] = request.headers.authorization?.split(' ') ?? [];
-    return type === 'Bearer' ? token : undefined;
+    const crmUser = this.authService.toCrmUser({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      isActive: true,
+    });
+
+    if (!crmUser) {
+      throw new UnauthorizedException('CRM user not found or inactive');
+    }
+
+    request.crmUser = crmUser;
+    return true;
   }
 }

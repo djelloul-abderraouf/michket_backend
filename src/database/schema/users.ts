@@ -10,6 +10,11 @@ import {
 export const userRoleEnum = pgEnum('user_role', [
   'customer',
   'admin',
+  'commercial',
+  'fabrication',
+  'preparation',
+  'livraison',
+  'confirmation',
   'super_admin',
 ]);
 

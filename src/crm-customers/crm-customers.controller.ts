@@ -39,7 +39,7 @@ export class CrmCustomersController {
   @Get()
   @ApiOperation({ summary: 'Get all CRM customers' })
   @ApiResponse({ status: 200, description: 'Returns all customers' })
-  @CrmRoles('admin', 'commercial')
+  @CrmRoles('admin', 'commercial', 'confirmation')
   async findAll(@Query('companyId') companyId?: string, @Query('wilaya') wilaya?: string) {
     if (companyId) {
       return this.crmCustomersService.findByCompany(companyId);
@@ -77,7 +77,7 @@ export class CrmCustomersController {
   @Delete(':id')
   @ApiOperation({ summary: 'Delete CRM customer' })
   @ApiResponse({ status: 200, description: 'Customer deleted successfully' })
-  @CrmRoles('admin')
+  @CrmRoles('admin', 'commercial')
   @HttpCode(HttpStatus.NO_CONTENT)
   async delete(@Param('id') id: string) {
     return this.crmCustomersService.delete(id);

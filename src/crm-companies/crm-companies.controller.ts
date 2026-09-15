@@ -74,7 +74,7 @@ export class CrmCompaniesController {
   @Delete(':id')
   @ApiOperation({ summary: 'Delete CRM company' })
   @ApiResponse({ status: 200, description: 'Company deleted successfully' })
-  @CrmRoles('admin')
+  @CrmRoles('admin', 'commercial')
   @HttpCode(HttpStatus.NO_CONTENT)
   async delete(@Param('id') id: string) {
     return this.crmCompaniesService.delete(id);

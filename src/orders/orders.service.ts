@@ -36,7 +36,7 @@ import {
 } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { DeliveryService } from '../delivery/delivery.service';
-import { OrderExpirationQueueService } from '../queue/order-expiration.queue';
+// import { OrderExpirationQueueService } from '../queue/order-expiration.queue'; // Temporarily disabled due to Redis issues
 
 type DbTransaction = Parameters<
   Parameters<
@@ -121,7 +121,7 @@ export class OrdersService {
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
     private readonly deliveryService: DeliveryService,
-    private readonly orderExpirationQueue: OrderExpirationQueueService,
+    // private readonly orderExpirationQueue: OrderExpirationQueueService, // Temporarily disabled due to Redis issues
     configService: ConfigService,
   ) {
     this.orderAccessSecret =
@@ -1103,7 +1103,8 @@ export class OrdersService {
         return;
       }
 
-      await this.orderExpirationQueue.schedule(orderId);
+      // Temporarily disabled due to Redis issues
+      // await this.orderExpirationQueue.schedule(orderId);
     } catch (error) {
       // The order is already safely committed in PostgreSQL.
       // Do not fail checkout only because the background queue is temporarily unavailable.
@@ -1122,7 +1123,8 @@ export class OrdersService {
     orderId: string,
   ): Promise<void> {
     try {
-      await this.orderExpirationQueue.remove(orderId);
+      // Temporarily disabled due to Redis issues
+      // await this.orderExpirationQueue.remove(orderId);
     } catch (error) {
       // PostgreSQL remains the source of truth. Even if Redis is
       // temporarily unavailable, the worker re-checks the order

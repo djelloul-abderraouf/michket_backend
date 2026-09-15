@@ -3,19 +3,21 @@ import {
   IsOptional,
   IsNotEmpty,
   IsEmail,
+  IsEnum,
   MinLength,
   MaxLength,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 import {
   ApiProperty,
   ApiPropertyOptional,
 } from '@nestjs/swagger';
 
 export class CreateCrmCustomerDto {
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  id!: string;
+  id?: string;
 
   @ApiProperty()
   @IsString()
@@ -36,6 +38,9 @@ export class CreateCrmCustomerDto {
   @IsNotEmpty()
   @MinLength(6)
   @MaxLength(30)
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.replace(/\s+/g, '') : value,
+  )
   phone!: string;
 
   @ApiPropertyOptional()
@@ -48,9 +53,8 @@ export class CreateCrmCustomerDto {
   @IsNotEmpty()
   wilaya!: string;
 
-  @ApiProperty()
-  @IsString()
-  @IsNotEmpty()
+  @ApiProperty({ enum: ['particulier', 'professionnel'] })
+  @IsEnum(['particulier', 'professionnel'])
   type!: 'particulier' | 'professionnel';
 
   @ApiPropertyOptional()
@@ -91,9 +95,9 @@ export class UpdateCrmCustomerDto {
   @IsString()
   wilaya?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ enum: ['particulier', 'professionnel'] })
   @IsOptional()
-  @IsString()
+  @IsEnum(['particulier', 'professionnel'])
   type?: 'particulier' | 'professionnel';
 
   @ApiPropertyOptional()

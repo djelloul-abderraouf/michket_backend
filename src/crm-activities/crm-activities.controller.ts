@@ -22,6 +22,7 @@ import { CreateCrmActivityDto } from './dto/crm-activities.dto';
 import { CrmAuthGuard } from '../auth/guards/crm-auth.guard';
 import { CrmRolesGuard } from '../auth/guards/crm-roles.guard';
 import { CrmRoles } from '../common/decorators/roles.decorator';
+import { CurrentCrmUser } from '../common/decorators/current-crm-user.decorator';
 
 @ApiTags('CRM Activities')
 @Controller('crm/activities')
@@ -58,14 +59,17 @@ export class CrmActivitiesController {
   @ApiOperation({ summary: 'Create a new CRM activity' })
   @ApiResponse({ status: 201, description: 'Activity created successfully' })
   @CrmRoles('admin', 'commercial')
-  async create(@Body() dto: CreateCrmActivityDto) {
-    return this.crmActivitiesService.create(dto);
+  async create(@Body() dto: CreateCrmActivityDto, @CurrentCrmUser() crmUser: any) {
+    return this.crmActivitiesService.create({
+      ...dto,
+      ownerId: dto.ownerId || crmUser?.id,
+    });
   }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Delete CRM activity' })
   @ApiResponse({ status: 200, description: 'Activity deleted successfully' })
-  @CrmRoles('admin')
+  @CrmRoles('admin', 'commercial')
   @HttpCode(HttpStatus.NO_CONTENT)
   async delete(@Param('id') id: string) {
     return this.crmActivitiesService.delete(id);

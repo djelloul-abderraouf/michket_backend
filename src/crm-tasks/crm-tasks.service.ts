@@ -10,7 +10,6 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import * as schema from '../database/schema';
 import { crmTasks } from '../database/schema';
-import { users } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { CrmBaseService } from '../crm-base/crm-base.service';
 import {
@@ -28,18 +27,20 @@ export class CrmTasksService extends CrmBaseService {
   }
 
   async findAll() {
-    return this.findAllEntities(crmTasks);
+    const tasks = await this.findAllEntities<any>(crmTasks);
+    return tasks.map((task) => this.serialize(task));
   }
 
   async findById(id: string) {
-    return this.findEntityById(crmTasks, id, 'Task');
+    const task = await this.findEntityById<any>(crmTasks, id, 'Task');
+    return this.serialize(task);
   }
 
   async create(dto: CreateCrmTaskDto) {
     const [task] = await this.db
       .insert(crmTasks)
       .values({
-        id: dto.id,
+        id: dto.id || this.newId(),
         title: dto.title,
         assigneeId: dto.assigneeId,
         assigneeName: dto.assigneeName,
@@ -50,7 +51,7 @@ export class CrmTasksService extends CrmBaseService {
       })
       .returning();
 
-    return task;
+    return this.serialize(task);
   }
 
   async update(id: string, dto: UpdateCrmTaskDto) {
@@ -58,15 +59,22 @@ export class CrmTasksService extends CrmBaseService {
 
     const [updatedTask] = await this.db
       .update(crmTasks)
-      .set({
-        ...dto,
-        dueAt: dto.dueAt ? new Date(dto.dueAt) : undefined,
-        updatedAt: new Date(),
-      })
+      .set(
+        this.omitUndefined({
+          title: dto.title,
+          assigneeId: dto.assigneeId,
+          assigneeName: dto.assigneeName,
+          projectId: dto.projectId,
+          priority: dto.priority,
+          done: dto.done,
+          dueAt: dto.dueAt ? new Date(dto.dueAt) : undefined,
+          updatedAt: new Date(),
+        }),
+      )
       .where(eq(crmTasks.id, id))
       .returning();
 
-    return updatedTask;
+    return this.serialize(updatedTask);
   }
 
   async delete(id: string) {
@@ -104,5 +112,13 @@ export class CrmTasksService extends CrmBaseService {
       .from(crmTasks)
       .where(eq(crmTasks.priority, priority))
       .orderBy(desc(crmTasks.createdAt));
+  }
+
+  private serialize(task: any) {
+    return {
+      ...task,
+      dueAt: this.toIso(task.dueAt) ?? new Date().toISOString(),
+      createdAt: this.toIso(task.createdAt) ?? new Date().toISOString(),
+    };
   }
 }

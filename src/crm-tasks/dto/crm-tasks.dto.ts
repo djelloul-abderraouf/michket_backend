@@ -12,10 +12,10 @@ import {
 } from '@nestjs/swagger';
 
 export class CreateCrmTaskDto {
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  id!: string;
+  id?: string;
 
   @ApiProperty()
   @IsString()

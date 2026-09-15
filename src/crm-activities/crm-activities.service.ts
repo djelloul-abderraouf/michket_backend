@@ -1,6 +1,7 @@
 import {
   Injectable,
   Inject,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   eq,
@@ -10,7 +11,6 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import * as schema from '../database/schema';
 import { crmActivities } from '../database/schema';
-import { users } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { CrmBaseService } from '../crm-base/crm-base.service';
 import { CreateCrmActivityDto } from './dto/crm-activities.dto';
@@ -25,18 +25,24 @@ export class CrmActivitiesService extends CrmBaseService {
   }
 
   async findAll() {
-    return this.findAllEntities(crmActivities);
+    const activities = await this.findAllEntities<any>(crmActivities);
+    return activities.map((activity) => this.serialize(activity));
   }
 
   async findById(id: string) {
-    return this.findEntityById(crmActivities, id, 'Activity');
+    const activity = await this.findEntityById<any>(crmActivities, id, 'Activity');
+    return this.serialize(activity);
   }
 
   async create(dto: CreateCrmActivityDto) {
+    if (!dto.ownerId) {
+      throw new BadRequestException('ownerId is required');
+    }
+
     const [activity] = await this.db
       .insert(crmActivities)
       .values({
-        id: dto.id,
+        id: dto.id || this.newId(),
         type: dto.type,
         target: dto.target,
         ownerId: dto.ownerId,
@@ -44,7 +50,7 @@ export class CrmActivitiesService extends CrmBaseService {
       })
       .returning();
 
-    return activity;
+    return this.serialize(activity);
   }
 
   async delete(id: string) {
@@ -66,5 +72,12 @@ export class CrmActivitiesService extends CrmBaseService {
       .from(crmActivities)
       .where(eq(crmActivities.target, target))
       .orderBy(desc(crmActivities.createdAt));
+  }
+
+  private serialize(activity: any) {
+    return {
+      ...activity,
+      createdAt: this.toIso(activity.createdAt) ?? new Date().toISOString(),
+    };
   }
 }

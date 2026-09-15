@@ -38,9 +38,9 @@ export class CrmProjectsService extends CrmBaseService {
     const [project] = await this.db
       .insert(crmProjects)
       .values({
-        id: dto.id,
+        id: dto.id || this.newId(),
         name: dto.name,
-        status: dto.status,
+        status: dto.status ?? 'actif',
       })
       .returning();
 

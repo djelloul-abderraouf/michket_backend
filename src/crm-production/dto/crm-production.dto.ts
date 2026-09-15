@@ -10,10 +10,10 @@ import {
 } from '@nestjs/swagger';
 
 export class CreateCrmProductionJobDto {
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  id!: string;
+  id?: string;
 
   @ApiProperty()
   @IsString()
@@ -35,9 +35,10 @@ export class CreateCrmProductionJobDto {
   @IsNotEmpty()
   productSummary!: string;
 
-  @ApiProperty({ enum: ['en_attente', 'en_cours', 'termine'] })
+  @ApiPropertyOptional({ enum: ['en_attente', 'en_cours', 'termine'] })
+  @IsOptional()
   @IsEnum(['en_attente', 'en_cours', 'termine'])
-  status!: 'en_attente' | 'en_cours' | 'termine';
+  status?: 'en_attente' | 'en_cours' | 'termine';
 }
 
 export class UpdateCrmProductionJobDto {

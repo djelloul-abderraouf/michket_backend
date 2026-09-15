@@ -27,26 +27,28 @@ export class CrmProposalsService extends CrmBaseService {
   }
 
   async findAll() {
-    return this.findAllEntities(crmProposals);
+    const proposals = await this.findAllEntities<any>(crmProposals);
+    return proposals.map((proposal) => this.serialize(proposal));
   }
 
   async findById(id: string) {
-    return this.findEntityById(crmProposals, id, 'Proposal');
+    const proposal = await this.findEntityById<any>(crmProposals, id, 'Proposal');
+    return this.serialize(proposal);
   }
 
   async create(dto: CreateCrmProposalDto) {
     const [proposal] = await this.db
       .insert(crmProposals)
       .values({
-        id: dto.id,
+        id: dto.id || this.newId(),
         dealId: dto.dealId,
-        status: dto.status,
+        status: dto.status ?? 'brouillon',
         items: dto.items as any,
         total: dto.total.toString(),
       })
       .returning();
 
-    return proposal;
+    return this.serialize(proposal);
   }
 
   async update(id: string, dto: UpdateCrmProposalDto) {
@@ -54,16 +56,20 @@ export class CrmProposalsService extends CrmBaseService {
 
     const [updatedProposal] = await this.db
       .update(crmProposals)
-      .set({
-        ...dto,
-        items: dto.items as any,
-        total: dto.total?.toString(),
-        updatedAt: new Date(),
-      })
+      .set(
+        this.omitUndefined({
+          dealId: dto.dealId,
+          status: dto.status,
+          items: dto.items as any,
+          total:
+            dto.total !== undefined ? dto.total.toString() : undefined,
+          updatedAt: new Date(),
+        }),
+      )
       .where(eq(crmProposals.id, id))
       .returning();
 
-    return updatedProposal;
+    return this.serialize(updatedProposal);
   }
 
   async delete(id: string) {
@@ -85,5 +91,23 @@ export class CrmProposalsService extends CrmBaseService {
       .from(crmProposals)
       .where(eq(crmProposals.status, status))
       .orderBy(desc(crmProposals.createdAt));
+  }
+
+  private serialize(proposal: any) {
+    const items = Array.isArray(proposal.items)
+      ? proposal.items.map((item: any) => ({
+          productId: item.productId,
+          productName: item.productName,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice ?? item.price ?? 0,
+        }))
+      : [];
+
+    return {
+      ...proposal,
+      items,
+      total: this.toNumber(proposal.total),
+      createdAt: this.toIso(proposal.createdAt) ?? proposal.createdAt,
+    };
   }
 }

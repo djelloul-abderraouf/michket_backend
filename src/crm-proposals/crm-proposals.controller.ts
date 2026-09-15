@@ -80,7 +80,7 @@ export class CrmProposalsController {
   @Delete(':id')
   @ApiOperation({ summary: 'Delete CRM proposal' })
   @ApiResponse({ status: 200, description: 'Proposal deleted successfully' })
-  @CrmRoles('admin')
+  @CrmRoles('admin', 'commercial')
   @HttpCode(HttpStatus.NO_CONTENT)
   async delete(@Param('id') id: string) {
     return this.crmProposalsService.delete(id);

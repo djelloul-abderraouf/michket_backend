@@ -11,10 +11,10 @@ import {
 } from '@nestjs/swagger';
 
 export class CreateCrmCompanyDto {
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  id!: string;
+  id?: string;
 
   @ApiProperty()
   @IsString()

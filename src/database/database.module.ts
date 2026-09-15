@@ -42,21 +42,49 @@ class DatabasePoolLifecycle implements OnApplicationShutdown {
       useFactory: async (configService: ConfigService) => {
         const logger = new Logger('Database');
 
+        const poolMax = Number(
+          configService.get('DATABASE_POOL_MAX') ?? 8,
+        );
+
         const pool = new Pool({
           connectionString: configService.getOrThrow<string>('DATABASE_URL'),
-          max: configService.get<number>('DATABASE_POOL_MAX', 10),
-          idleTimeoutMillis: 30_000,
-          connectionTimeoutMillis: 5_000,
+          max: Number.isFinite(poolMax) && poolMax > 0 ? poolMax : 8,
+          idleTimeoutMillis: 15_000,
+          connectionTimeoutMillis: 60_000,
           keepAlive: true,
+          keepAliveInitialDelayMillis: 10_000,
         });
 
-        try {
-          await pool.query('SELECT 1');
-          logger.log('✅ Database connected');
-        } catch (error) {
-          logger.error('❌ Database connection failed', error);
+        pool.on('error', (error) => {
+          logger.error(`PostgreSQL pool error: ${error.message}`);
+        });
+
+        pool.on('connect', (client) => {
+          void client.query('SET statement_timeout = 120000');
+        });
+
+        let lastError: unknown;
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+          try {
+            await pool.query('SELECT 1');
+            lastError = undefined;
+            logger.log('Database connected');
+            break;
+          } catch (error) {
+            lastError = error;
+            logger.warn(
+              `Database connection attempt ${attempt}/3 failed`,
+            );
+            await new Promise((resolve) =>
+              setTimeout(resolve, attempt * 1500),
+            );
+          }
+        }
+
+        if (lastError) {
+          logger.error('Database connection failed', lastError);
           await pool.end().catch(() => undefined);
-          throw error;
+          throw lastError;
         }
 
         return pool;

@@ -47,11 +47,4 @@ export {
   crmTasks,
   crmActivities,
   crmLoginAudit,
-  crmContactTypeEnum,
-  crmDealStageEnum,
-  crmProposalStatusEnum,
-  crmProductionStatusEnum,
-  crmProjectStatusEnum,
-  crmActivityTypeEnum,
-  crmPriorityEnum,
 } from './crm';

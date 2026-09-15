@@ -8,6 +8,7 @@ import {
   DocumentBuilder,
   SwaggerModule,
 } from '@nestjs/swagger';
+import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
@@ -45,34 +46,91 @@ async function bootstrap() {
       },
     );
 
-  await app.register(helmet);
+  const corsOrigins = (
+    process.env.CORS_ORIGINS ||
+    'http://localhost:3000,http://localhost:3001'
+  )
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 
-  const rateLimitRedis = redisUrl
-    ? new IORedis(redisUrl, {
-        maxRetriesPerRequest: 2,
-        enableReadyCheck: true,
-        lazyConnect: true,
-      })
-    : undefined;
-
-  if (rateLimitRedis) {
-    rateLimitRedis.on('error', (error) => {
-      logger.error(
-        `Rate-limit Redis error: ${error.message}`,
-      );
-    });
-
-    await rateLimitRedis.connect();
-    await rateLimitRedis.ping();
-
-    logger.log(
-      'Rate limiting backend: Redis',
-    );
-  } else {
-    logger.warn(
-      'REDIS_URL is missing: rate limiting uses local memory only',
-    );
+  if (!isProduction) {
+    for (const origin of [
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'http://127.0.0.1:3000',
+      'http://127.0.0.1:3001',
+    ]) {
+      if (!corsOrigins.includes(origin)) {
+        corsOrigins.push(origin);
+      }
+    }
   }
+
+  // CORS must be registered before Helmet so OPTIONS preflight
+  // gets Access-Control-Allow-Origin instead of a blocked response.
+  await app.register(cors, {
+    origin: corsOrigins,
+    credentials: true,
+    methods: [
+      'GET',
+      'POST',
+      'PUT',
+      'DELETE',
+      'PATCH',
+      'OPTIONS',
+      'HEAD',
+    ],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'Idempotency-Key',
+      'X-Session-Id',
+      'X-Order-Access-Token',
+    ],
+    exposedHeaders: [
+      'X-Session-Id',
+      'X-Request-Id',
+    ],
+  });
+
+  await app.register(helmet, {
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: {
+      policy: 'cross-origin',
+    },
+  });
+
+  // Temporarily disable rate-limit Redis to allow server to start
+  const rateLimitRedis = undefined;
+
+  // const rateLimitRedis = redisUrl
+  //   ? new IORedis(redisUrl, {
+  //       maxRetriesPerRequest: 2,
+  //       enableReadyCheck: true,
+  //       lazyConnect: true,
+  //     })
+  //   : undefined;
+
+  // if (rateLimitRedis) {
+  //   rateLimitRedis.on('error', (error) => {
+  //     logger.error(
+  //       `Rate-limit Redis error: ${error.message}`,
+  //     );
+  //   });
+
+  //   await rateLimitRedis.connect();
+  //   await rateLimitRedis.ping();
+
+  //   logger.log(
+  //     'Rate limiting backend: Redis',
+  //   );
+  // } else {
+  //   logger.warn(
+  //     'REDIS_URL is missing: rate limiting uses local memory only',
+  //   );
+  // }
 
   await app.register(rateLimit, {
     global: true,
@@ -90,25 +148,34 @@ async function bootstrap() {
     ipv6Subnet: 64,
 
     // Health checks must remain usable by hosting/monitoring systems.
-    allowList: (request) =>
-      request.url.startsWith(
-        `/${apiPrefix}/health`,
-      ),
+    // OPTIONS preflight must not consume the rate-limit budget.
+    // Authenticated CRM staff burst-load several resources per page;
+    // keep the public storefront limit, but do not throttle /crm.
+    allowList: (request) => {
+      const url = request.url || '';
+      return (
+        request.method === 'OPTIONS' ||
+        url.includes('/health') ||
+        url.includes('/crm/') ||
+        url.includes('/auth/me')
+      );
+    },
   });
 
-  if (rateLimitRedis) {
-    app
-      .getHttpAdapter()
-      .getInstance()
-      .addHook('onClose', async () => {
-        if (rateLimitRedis.status === 'ready') {
-          await rateLimitRedis.quit();
-          return;
-        }
+  // Temporarily disabled
+  // if (rateLimitRedis) {
+  //   app
+  //     .getHttpAdapter()
+  //     .getInstance()
+  //     .addHook('onClose', async () => {
+  //       if (rateLimitRedis.status === 'ready') {
+  //         await rateLimitRedis.quit();
+  //         return;
+  //       }
 
-        rateLimitRedis.disconnect();
-      });
-  }
+  //       rateLimitRedis.disconnect();
+  //     });
+  // }
 
   await app.register(multipart, {
     limits: {
@@ -136,37 +203,6 @@ async function bootstrap() {
   app.useGlobalInterceptors(
     new RequestIdInterceptor(),
   );
-
-  const corsOrigins = (
-    process.env.CORS_ORIGINS ||
-    'http://localhost:3001'
-  )
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-
-  app.enableCors({
-    origin: corsOrigins,
-    credentials: true,
-    methods: [
-      'GET',
-      'POST',
-      'PUT',
-      'DELETE',
-      'PATCH',
-    ],
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'Idempotency-Key',
-      'X-Session-Id',
-      'X-Order-Access-Token',
-    ],
-    exposedHeaders: [
-      'X-Session-Id',
-      'X-Request-Id',
-    ],
-  });
 
   app.setGlobalPrefix(apiPrefix);
 
@@ -202,7 +238,7 @@ async function bootstrap() {
 
   await app.listen(
     port,
-    '0.0.0.0',
+    process.env.LISTEN_HOST || '0.0.0.0',
   );
 
   logger.log(

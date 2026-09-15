@@ -16,6 +16,7 @@ export class AuthController {
       role: req.user.role,
       firstName: req.user.firstName,
       lastName: req.user.lastName,
+      isActive: req.user.isActive ?? true,
     };
   }
 }

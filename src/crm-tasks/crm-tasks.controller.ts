@@ -39,7 +39,7 @@ export class CrmTasksController {
   @Get()
   @ApiOperation({ summary: 'Get all CRM tasks' })
   @ApiResponse({ status: 200, description: 'Returns all tasks' })
-  @CrmRoles('admin', 'commercial', 'fabrication', 'preparation', 'livraison')
+  @CrmRoles('admin', 'commercial', 'confirmation', 'atelier_design', 'fabrication', 'preparation', 'livraison')
   async findAll(
     @Query('assigneeId') assigneeId?: string,
     @Query('projectId') projectId?: string,
@@ -64,7 +64,7 @@ export class CrmTasksController {
   @Get(':id')
   @ApiOperation({ summary: 'Get CRM task by ID' })
   @ApiResponse({ status: 200, description: 'Returns the task' })
-  @CrmRoles('admin', 'commercial', 'fabrication', 'preparation', 'livraison')
+  @CrmRoles('admin', 'commercial', 'confirmation', 'atelier_design', 'fabrication', 'preparation', 'livraison')
   async findById(@Param('id') id: string) {
     return this.crmTasksService.findById(id);
   }
@@ -72,7 +72,7 @@ export class CrmTasksController {
   @Post()
   @ApiOperation({ summary: 'Create a new CRM task' })
   @ApiResponse({ status: 201, description: 'Task created successfully' })
-  @CrmRoles('admin', 'commercial', 'fabrication', 'preparation', 'livraison')
+  @CrmRoles('admin', 'commercial', 'confirmation', 'atelier_design', 'fabrication', 'preparation', 'livraison')
   async create(@Body() dto: CreateCrmTaskDto) {
     return this.crmTasksService.create(dto);
   }
@@ -80,7 +80,7 @@ export class CrmTasksController {
   @Put(':id')
   @ApiOperation({ summary: 'Update CRM task' })
   @ApiResponse({ status: 200, description: 'Task updated successfully' })
-  @CrmRoles('admin', 'commercial', 'fabrication', 'preparation', 'livraison')
+  @CrmRoles('admin', 'commercial', 'confirmation', 'atelier_design', 'fabrication', 'preparation', 'livraison')
   async update(@Param('id') id: string, @Body() dto: UpdateCrmTaskDto) {
     return this.crmTasksService.update(id, dto);
   }
@@ -88,7 +88,7 @@ export class CrmTasksController {
   @Delete(':id')
   @ApiOperation({ summary: 'Delete CRM task' })
   @ApiResponse({ status: 200, description: 'Task deleted successfully' })
-  @CrmRoles('admin')
+  @CrmRoles('admin', 'commercial', 'confirmation', 'atelier_design', 'fabrication', 'preparation', 'livraison')
   @HttpCode(HttpStatus.NO_CONTENT)
   async delete(@Param('id') id: string) {
     return this.crmTasksService.delete(id);

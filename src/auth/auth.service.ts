@@ -9,13 +9,35 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '../database/schema';
 import { users } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
+import {
+  toCrmRequestUser,
+  type AuthUserRecord,
+} from './crm-role-map';
+
+const USER_CACHE_TTL_MS = 60_000;
 
 @Injectable()
 export class AuthService {
+  private readonly userCache = new Map<
+    string,
+    { value: AuthUserRecord; expiresAt: number }
+  >();
+  private readonly inflight = new Map<string, Promise<AuthUserRecord>>();
+
   constructor(
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
   ) {}
+
+  invalidateUserCache(userId?: string) {
+    if (userId) {
+      this.userCache.delete(userId);
+      this.inflight.delete(userId);
+      return;
+    }
+    this.userCache.clear();
+    this.inflight.clear();
+  }
 
   /**
    * Validate the authenticated Supabase identity against the Michket database.
@@ -27,15 +49,75 @@ export class AuthService {
   async validateUser(supabaseUser: {
     id: string;
     email: string;
-  }): Promise<{
+  }): Promise<AuthUserRecord> {
+    const cached = this.userCache.get(supabaseUser.id);
+    if (cached && cached.expiresAt > Date.now()) {
+      if (!cached.value.isActive) {
+        throw new UnauthorizedException('User account is disabled');
+      }
+      return cached.value;
+    }
+
+    const pending = this.inflight.get(supabaseUser.id);
+    if (pending) {
+      const user = await pending;
+      if (!user.isActive) {
+        throw new UnauthorizedException('User account is disabled');
+      }
+      return user;
+    }
+
+    const loadPromise = this.loadOrCreateUser(supabaseUser);
+    this.inflight.set(supabaseUser.id, loadPromise);
+
+    try {
+      const user = await loadPromise;
+      if (!user.isActive) {
+        throw new UnauthorizedException('User account is disabled');
+      }
+      return user;
+    } finally {
+      this.inflight.delete(supabaseUser.id);
+    }
+  }
+
+  toCrmUser(user: AuthUserRecord) {
+    return toCrmRequestUser(user);
+  }
+
+  /**
+   * Validate CRM user for CRM-specific operations.
+   * Uses the existing users table with role-based access control.
+   */
+  async validateCrmUser(supabaseUser: {
     id: string;
     email: string;
-    role: 'customer' | 'admin' | 'super_admin';
-    firstName?: string;
-    lastName?: string;
-  }> {
+  }) {
+    const user = await this.validateUser(supabaseUser);
+    return this.toCrmUser(user);
+  }
+
+  private remember(user: AuthUserRecord) {
+    this.userCache.set(user.id, {
+      value: user,
+      expiresAt: Date.now() + USER_CACHE_TTL_MS,
+    });
+    return user;
+  }
+
+  private async loadOrCreateUser(supabaseUser: {
+    id: string;
+    email: string;
+  }): Promise<AuthUserRecord> {
     let [user] = await this.db
-      .select()
+      .select({
+        id: users.id,
+        email: users.email,
+        role: users.role,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        isActive: users.isActive,
+      })
       .from(users)
       .where(eq(users.id, supabaseUser.id))
       .limit(1);
@@ -49,7 +131,14 @@ export class AuthService {
           role: 'customer',
           isActive: true,
         })
-        .returning();
+        .returning({
+          id: users.id,
+          email: users.email,
+          role: users.role,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          isActive: users.isActive,
+        });
     } else if (user.email !== supabaseUser.email) {
       [user] = await this.db
         .update(users)
@@ -58,65 +147,27 @@ export class AuthService {
           updatedAt: new Date(),
         })
         .where(eq(users.id, supabaseUser.id))
-        .returning();
+        .returning({
+          id: users.id,
+          email: users.email,
+          role: users.role,
+          firstName: users.firstName,
+          lastName: users.lastName,
+          isActive: users.isActive,
+        });
     }
 
-    if (!user || !user.isActive) {
-      throw new UnauthorizedException('User account is disabled');
+    if (!user) {
+      throw new UnauthorizedException('User not found');
     }
 
-    return {
+    return this.remember({
       id: user.id,
       email: user.email,
       role: user.role,
       firstName: user.firstName ?? undefined,
       lastName: user.lastName ?? undefined,
-    };
-  }
-
-  /**
-   * Validate CRM user for CRM-specific operations.
-   * Uses the existing users table with role-based access control.
-   */
-  async validateCrmUser(supabaseUser: {
-    id: string;
-    email: string;
-  }): Promise<{
-    id: string;
-    email: string;
-    firstName?: string;
-    lastName?: string;
-    role: 'customer' | 'admin' | 'super_admin';
-    roles: string[];
-  } | null> {
-    const [user] = await this.db
-      .select()
-      .from(users)
-      .where(eq(users.id, supabaseUser.id))
-      .limit(1);
-
-    if (!user || !user.isActive) {
-      return null;
-    }
-
-    // Only admin and super_admin have CRM access
-    if (user.role === 'customer') {
-      return null;
-    }
-
-    // Map user roles to CRM roles
-    const roleMapping: Record<string, string[]> = {
-      admin: ['admin', 'commercial', 'fabrication', 'preparation', 'livraison'],
-      super_admin: ['admin', 'commercial', 'fabrication', 'preparation', 'livraison', 'confirmation'],
-    };
-
-    return {
-      id: user.id,
-      email: user.email,
-      firstName: user.firstName ?? undefined,
-      lastName: user.lastName ?? undefined,
-      role: user.role,
-      roles: roleMapping[user.role] || [],
-    };
+      isActive: user.isActive,
+    });
   }
 }

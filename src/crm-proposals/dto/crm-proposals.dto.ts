@@ -30,23 +30,24 @@ class ProposalItem {
 
   @ApiProperty()
   @IsNumber()
-  price!: number;
+  unitPrice!: number;
 }
 
 export class CreateCrmProposalDto {
-  @ApiProperty()
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  id!: string;
+  id?: string;
 
   @ApiProperty()
   @IsString()
   @IsNotEmpty()
   dealId!: string;
 
-  @ApiProperty({ enum: ['brouillon', 'envoyee', 'acceptee', 'refusee'] })
+  @ApiPropertyOptional({ enum: ['brouillon', 'envoyee', 'acceptee', 'refusee'] })
+  @IsOptional()
   @IsEnum(['brouillon', 'envoyee', 'acceptee', 'refusee'])
-  status!: 'brouillon' | 'envoyee' | 'acceptee' | 'refusee';
+  status?: 'brouillon' | 'envoyee' | 'acceptee' | 'refusee';
 
   @ApiProperty({ type: [ProposalItem] })
   @IsArray()
