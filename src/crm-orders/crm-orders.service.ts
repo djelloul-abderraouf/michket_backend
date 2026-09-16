@@ -25,6 +25,7 @@ import {
   orderStatusHistory,
   productImages,
   products,
+  shipments,
   users,
 } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
@@ -155,6 +156,10 @@ export class CrmOrdersService extends CrmBaseService {
 
     if (crmStatus === 'en_fabrication') {
       await this.ensureProductionJob(order);
+    }
+
+    if (dbStatus === 'confirmed') {
+      await this.ensurePendingShipment(order);
     }
 
     const updateData: Record<string, unknown> = {
@@ -331,14 +336,19 @@ export class CrmOrdersService extends CrmBaseService {
     const includeHistory = options?.includeHistory !== false;
     const orderIds = orderRows.map((order) => order.id);
 
-    const [itemRows, historyRows, jobRows] = await Promise.all([
+    const [itemRows, historyRows, jobRows, shipmentRows] = await Promise.all([
       this.db
         .select({
           orderId: orderItems.orderId,
           productId: orderItems.productId,
           productName: orderItems.productName,
+          productSlug: orderItems.productSlug,
+          variantName: orderItems.variantName,
+          colorName: orderItems.colorName,
           quantity: orderItems.quantity,
           unitPriceCents: orderItems.unitPriceCents,
+          totalPriceCents: orderItems.totalPriceCents,
+          personalization: orderItems.personalization,
         })
         .from(orderItems)
         .where(inArray(orderItems.orderId, orderIds)),
@@ -356,7 +366,14 @@ export class CrmOrdersService extends CrmBaseService {
         })
         .from(crmProductionJobs)
         .where(inArray(crmProductionJobs.orderId, orderIds)),
+      this.db
+        .select()
+        .from(shipments)
+        .where(inArray(shipments.orderId, orderIds)),
     ]);
+    const shipmentByOrder = new Map(
+      shipmentRows.map((row) => [row.orderId, row]),
+    );
 
     const authorIds = [
       ...new Set(
@@ -390,13 +407,14 @@ export class CrmOrdersService extends CrmBaseService {
       const items = itemRows.filter((item) => item.orderId === order.id);
       const history = historyRows.filter((item) => item.orderId === order.id);
       const jobs = jobRows.filter((item) => item.orderId === order.id);
+      const shipment = shipmentByOrder.get(order.id);
       const productionComplete =
         jobs.length > 0 && jobs.every((job) => job.status === 'termine');
 
       return {
         id: order.id,
         reference: order.reference,
-        source: 'directe',
+        source: 'directe' as const,
         clientName: `${order.firstName} ${order.lastName}`.trim(),
         firstName: order.firstName,
         lastName: order.lastName,
@@ -404,22 +422,47 @@ export class CrmOrdersService extends CrmBaseService {
         email: order.email,
         wilaya: order.wilayaName,
         wilayaName: order.wilayaName,
+        wilayaCode: order.wilayaCode,
         commune: order.commune,
+        addressLine1: order.addressLine1,
+        addressLine2: order.addressLine2,
+        deliveryType: order.deliveryType,
+        deliveryOfficeId: order.deliveryOfficeId,
+        deliveryOfficeName: order.deliveryOfficeName,
+        paymentMethod: order.paymentMethod,
+        paymentStatus: order.paymentStatus,
+        promoCode: order.promoCode,
+        subtotal: centsToDzd(order.subtotalCents),
+        deliveryFee: centsToDzd(order.deliveryFeeCents),
+        discount: centsToDzd(order.discountCents),
+        currency: order.currency,
         status: toCrmOrderStatus(order.status, productionComplete),
         dbStatus: order.status,
         items: items.map((item) => ({
           productId: item.productId ?? '',
           productName: item.productName,
+          productSlug: item.productSlug,
+          variantName: item.variantName,
+          colorName: item.colorName,
           quantity: item.quantity,
           unitPrice: centsToDzd(item.unitPriceCents),
+          lineTotal: centsToDzd(item.totalPriceCents),
+          personalization: item.personalization,
         })),
         total: centsToDzd(order.totalCents),
         totalCents: order.totalCents,
         notes: order.notes,
-        trackingNumber: null,
+        cancelReason: order.cancelReason,
+        trackingNumber: shipment?.trackingNumber ?? null,
+        carrier: shipment?.provider ?? null,
+        carrierStatus: shipment?.status ?? null,
+        shipmentId: shipment?.id ?? null,
         deliveredAt: this.toIso(order.deliveredAt),
         shippedAt: this.toIso(order.shippedAt),
+        cancelledAt: this.toIso(order.cancelledAt),
+        paidAt: this.toIso(order.paidAt),
         createdAt: this.toIso(order.createdAt) ?? new Date().toISOString(),
+        updatedAt: this.toIso(order.updatedAt),
         history: history.map((event) => ({
           id: event.id,
           from: event.fromStatus
@@ -434,6 +477,26 @@ export class CrmOrdersService extends CrmBaseService {
           note: event.reason ?? undefined,
         })),
       };
+    });
+  }
+
+  private async ensurePendingShipment(order: typeof orders.$inferSelect) {
+    const [existing] = await this.db
+      .select({ id: shipments.id })
+      .from(shipments)
+      .where(eq(shipments.orderId, order.id))
+      .limit(1);
+
+    if (existing) {
+      return;
+    }
+
+    await this.db.insert(shipments).values({
+      orderId: order.id,
+      provider: 'yalidine',
+      status: 'pending',
+      stopDeskId: order.deliveryOfficeId,
+      stopDeskName: order.deliveryOfficeName,
     });
   }
 

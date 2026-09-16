@@ -5,6 +5,7 @@ import {
   Param,
   Post,
   Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -107,6 +108,18 @@ export class CrmUsersController {
   @CrmRoles('admin')
   async findAll() {
     return this.usersService.findAllForCrm();
+  }
+
+  @Get(':id/performance')
+  @ApiOperation({ summary: 'Staff performance KPIs and activity timeline' })
+  @CrmRoles('admin')
+  async performance(
+    @Param('id') id: string,
+    @Query('period') period?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.usersService.getCrmPerformance(id, { period, from, to });
   }
 
   @Post()

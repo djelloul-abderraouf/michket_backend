@@ -11,13 +11,22 @@ import {
   and,
   desc,
   eq,
+  gte,
+  inArray,
+  lte,
   ne,
+  sql,
 } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import * as schema from '../database/schema';
 import {
   addresses,
+  crmActivities,
+  crmDeals,
+  crmLoginAudit,
+  crmTasks,
+  orderStatusHistory,
   users,
 } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
@@ -76,7 +85,7 @@ export class UsersService {
   }
 
   async findAllForCrm() {
-    return this.db
+    const rows = await this.db
       .select({
         id: users.id,
         email: users.email,
@@ -89,7 +98,204 @@ export class UsersService {
         updatedAt: users.updatedAt,
       })
       .from(users)
+      .where(inArray(users.role, [...CRM_STAFF_ROLES]))
       .orderBy(desc(users.createdAt));
+
+    const ids = rows.map((row) => row.id);
+    const logins = ids.length
+      ? await this.db
+          .select({
+            userId: crmLoginAudit.userId,
+            lastLoginAt: sql<Date>`max(${crmLoginAudit.loggedAt})`,
+          })
+          .from(crmLoginAudit)
+          .where(inArray(crmLoginAudit.userId, ids))
+          .groupBy(crmLoginAudit.userId)
+      : [];
+    const loginMap = new Map(
+      logins.map((row) => [row.userId, row.lastLoginAt]),
+    );
+
+    return rows.map((row) => ({
+      ...row,
+      lastLoginAt: loginMap.get(row.id) ?? null,
+    }));
+  }
+
+  async getCrmPerformance(
+    id: string,
+    filters: { period?: string; from?: string; to?: string } = {},
+  ) {
+    const user = await this.findById(id);
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const range = this.performanceRange(filters.period, filters.from, filters.to);
+    const dateFilter = and(
+      gte(orderStatusHistory.createdAt, range.from),
+      lte(orderStatusHistory.createdAt, range.to),
+    );
+
+    const historyRows = await this.db
+      .select()
+      .from(orderStatusHistory)
+      .where(and(eq(orderStatusHistory.changedByUserId, id), dateFilter))
+      .orderBy(desc(orderStatusHistory.createdAt));
+
+    const activityRows = await this.db
+      .select()
+      .from(crmActivities)
+      .where(
+        and(
+          eq(crmActivities.ownerId, id),
+          gte(crmActivities.createdAt, range.from),
+          lte(crmActivities.createdAt, range.to),
+        ),
+      )
+      .orderBy(desc(crmActivities.createdAt));
+
+    const taskRows = await this.db
+      .select()
+      .from(crmTasks)
+      .where(eq(crmTasks.assigneeId, id));
+
+    const tasksInPeriod = taskRows.filter((task) => {
+      const stamp = task.updatedAt || task.createdAt;
+      if (!stamp) {
+        return false;
+      }
+      const time = new Date(stamp).getTime();
+      return time >= range.from.getTime() && time <= range.to.getTime();
+    });
+
+    const dealRows = await this.db
+      .select()
+      .from(crmDeals)
+      .where(eq(crmDeals.ownerId, id));
+
+    const loginRows = await this.db
+      .select()
+      .from(crmLoginAudit)
+      .where(
+        and(
+          eq(crmLoginAudit.userId, id),
+          gte(crmLoginAudit.loggedAt, range.from),
+          lte(crmLoginAudit.loggedAt, range.to),
+        ),
+      )
+      .orderBy(desc(crmLoginAudit.loggedAt));
+
+    const confirmations = historyRows.filter((row) => row.toStatus === 'confirmed').length;
+    const deliveries = historyRows.filter((row) => row.toStatus === 'delivered').length;
+    const dailyMap = new Map<
+      string,
+      { date: string; statusChanges: number; activities: number; tasks: number; logins: number }
+    >();
+
+    const bump = (
+      dateValue: Date | string | null | undefined,
+      key: 'statusChanges' | 'activities' | 'tasks' | 'logins',
+    ) => {
+      if (!dateValue) {
+        return;
+      }
+      const date = new Date(dateValue).toISOString().slice(0, 10);
+      const current = dailyMap.get(date) || {
+        date,
+        statusChanges: 0,
+        activities: 0,
+        tasks: 0,
+        logins: 0,
+      };
+      current[key] += 1;
+      dailyMap.set(date, current);
+    };
+
+    historyRows.forEach((row) => bump(row.createdAt, 'statusChanges'));
+    activityRows.forEach((row) => bump(row.createdAt, 'activities'));
+    tasksInPeriod.filter((task) => task.done).forEach((task) => bump(task.updatedAt, 'tasks'));
+    loginRows.forEach((row) => bump(row.loggedAt, 'logins'));
+
+    const timeline = [
+      ...historyRows.map((row) => ({
+        at: row.createdAt,
+        type: 'commande',
+        label: `Statut ${row.fromStatus || '-'} → ${row.toStatus}`,
+        detail: row.reason,
+      })),
+      ...activityRows.map((row) => ({
+        at: row.createdAt,
+        type: row.type,
+        label: `${row.type} · ${row.target}`,
+        detail: row.description,
+      })),
+      ...tasksInPeriod.map((row) => ({
+        at: row.updatedAt || row.createdAt,
+        type: 'tache',
+        label: row.done ? `Tache terminee: ${row.title}` : `Tache: ${row.title}`,
+        detail: row.priority,
+      })),
+      ...loginRows.map((row) => ({
+        at: row.loggedAt,
+        type: 'connexion',
+        label: 'Connexion CRM',
+        detail: null as string | null,
+      })),
+    ]
+      .filter((item) => item.at)
+      .sort((a, b) => new Date(String(b.at)).getTime() - new Date(String(a.at)).getTime())
+      .slice(0, 80);
+
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role,
+      },
+      period: {
+        label: filters.period || 'week',
+        from: range.from.toISOString(),
+        to: range.to.toISOString(),
+      },
+      kpis: {
+        statusChanges: historyRows.length,
+        confirmations,
+        deliveries,
+        ordersTouched: new Set(historyRows.map((row) => row.orderId)).size,
+        activities: activityRows.length,
+        tasksDone: tasksInPeriod.filter((task) => task.done).length,
+        tasksOpen: taskRows.filter((task) => !task.done).length,
+        dealsOwned: dealRows.length,
+        logins: loginRows.length,
+      },
+      daily: [...dailyMap.values()].sort((a, b) => a.date.localeCompare(b.date)),
+      timeline,
+    };
+  }
+
+  private performanceRange(period?: string, from?: string, to?: string) {
+    const toDate = to ? new Date(to) : new Date();
+    toDate.setHours(23, 59, 59, 999);
+    const fromDate = from ? new Date(from) : new Date(toDate);
+
+    if (!from) {
+      if (period === 'day') {
+        fromDate.setHours(0, 0, 0, 0);
+      } else if (period === 'month') {
+        fromDate.setDate(fromDate.getDate() - 30);
+        fromDate.setHours(0, 0, 0, 0);
+      } else {
+        fromDate.setDate(fromDate.getDate() - 7);
+        fromDate.setHours(0, 0, 0, 0);
+      }
+    } else {
+      fromDate.setHours(0, 0, 0, 0);
+    }
+
+    return { from: fromDate, to: toDate };
   }
 
   async updateCrmUser(

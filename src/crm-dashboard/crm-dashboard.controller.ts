@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -28,8 +29,12 @@ export class CrmDashboardController {
   @ApiOperation({ summary: 'Get CRM dashboard statistics' })
   @ApiResponse({ status: 200, description: 'Returns dashboard statistics' })
   @CrmRoles('admin', 'commercial', 'confirmation', 'fabrication', 'preparation', 'livraison')
-  async getStats() {
-    return this.crmDashboardService.getEnhancedStats();
+  async getStats(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('wilaya') wilaya?: string,
+  ) {
+    return this.crmDashboardService.getEnhancedStats({ from, to, wilaya });
   }
 
   @Get('summary')
@@ -68,15 +73,23 @@ export class CrmDashboardController {
   @ApiOperation({ summary: 'Get enhanced dashboard statistics with KPIs' })
   @ApiResponse({ status: 200, description: 'Returns enhanced statistics with detailed KPIs' })
   @CrmRoles('admin', 'commercial', 'confirmation', 'fabrication', 'preparation', 'livraison')
-  async getEnhancedStats() {
-    return this.crmDashboardService.getEnhancedStats();
+  async getEnhancedStats(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('wilaya') wilaya?: string,
+  ) {
+    return this.crmDashboardService.getEnhancedStats({ from, to, wilaya });
   }
 
   @Get('kpis')
   @ApiOperation({ summary: 'Get key performance indicators' })
   @ApiResponse({ status: 200, description: 'Returns KPIs for dashboard' })
   @CrmRoles('admin', 'commercial', 'confirmation', 'fabrication', 'preparation', 'livraison')
-  async getKPIs() {
-    return this.crmDashboardService.getKPIs();
+  async getKPIs(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('wilaya') wilaya?: string,
+  ) {
+    return this.crmDashboardService.getKPIs({ from, to, wilaya });
   }
 }

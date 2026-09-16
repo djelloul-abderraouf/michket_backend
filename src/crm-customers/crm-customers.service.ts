@@ -9,7 +9,7 @@ import {
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import * as schema from '../database/schema';
-import { crmContacts } from '../database/schema';
+import { crmContacts, users } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { CrmBaseService } from '../crm-base/crm-base.service';
 import {
@@ -27,8 +27,14 @@ export class CrmCustomersService extends CrmBaseService {
   }
 
   async findAll() {
+    await this.syncStorefrontCustomers();
+    const storefrontUsers = await this.db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.role, 'customer'));
+    const storefrontIds = new Set(storefrontUsers.map((user) => user.id));
     const customers = await this.findAllEntities<any>(crmContacts);
-    return customers.map((customer) => this.serialize(customer));
+    return customers.map((customer) => this.serialize(customer, storefrontIds.has(customer.id)));
   }
 
   async findById(id: string) {
@@ -102,10 +108,64 @@ export class CrmCustomersService extends CrmBaseService {
       .orderBy(desc(crmContacts.createdAt));
   }
 
-  private serialize(customer: any) {
+  private serialize(customer: any, fromBoutique = false) {
     return {
       ...customer,
+      source: fromBoutique ? 'boutique' : 'crm',
       createdAt: this.toIso(customer.createdAt) ?? new Date().toISOString(),
     };
+  }
+
+  private async syncStorefrontCustomers() {
+    const storefrontUsers = await this.db
+      .select()
+      .from(users)
+      .where(eq(users.role, 'customer'));
+
+    if (storefrontUsers.length === 0) {
+      return;
+    }
+
+    const existing = await this.db
+      .select({
+        id: crmContacts.id,
+        email: crmContacts.email,
+        phone: crmContacts.phone,
+      })
+      .from(crmContacts);
+
+    const existingIds = new Set(existing.map((row) => row.id));
+    const existingEmails = new Set(
+      existing.map((row) => row.email?.toLowerCase()).filter(Boolean),
+    );
+    const existingPhones = new Set(
+      existing.map((row) => row.phone?.replace(/\s+/g, '')).filter(Boolean),
+    );
+
+    const toInsert = storefrontUsers.filter((user) => {
+      const email = user.email?.toLowerCase();
+      const phone = user.phone?.replace(/\s+/g, '');
+      return (
+        !existingIds.has(user.id) &&
+        !(email && existingEmails.has(email)) &&
+        !(phone && existingPhones.has(phone))
+      );
+    });
+
+    if (toInsert.length === 0) {
+      return;
+    }
+
+    await this.db.insert(crmContacts).values(
+      toInsert.map((user) => ({
+        id: user.id,
+        firstName: user.firstName?.trim() || user.email.split('@')[0],
+        lastName: user.lastName?.trim() || '-',
+        phone: user.phone?.replace(/\s+/g, '') || 'non-renseigne',
+        email: user.email,
+        wilaya: 'Alger',
+        type: 'particulier' as const,
+      })),
+    );
   }
 }
