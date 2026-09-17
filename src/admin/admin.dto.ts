@@ -116,15 +116,9 @@ export class UpdateOrderStatusDto {
 export class UpdateAdminOrderDto {
   @IsOptional()
   @IsString()
-  @MinLength(1)
-  @MaxLength(100)
-  firstName?: string;
-
-  @IsOptional()
-  @IsString()
-  @MinLength(1)
-  @MaxLength(100)
-  lastName?: string;
+  @MinLength(2)
+  @MaxLength(200)
+  fullName?: string;
 
   @IsOptional()
   @IsString()

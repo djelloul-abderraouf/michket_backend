@@ -65,8 +65,7 @@ export type CreateOrderInput = {
     personalization?: unknown;
   }>;
 
-  firstName: string;
-  lastName: string;
+  fullName: string;
   phone: string;
   email?: string;
 
@@ -872,8 +871,7 @@ export class OrdersService {
         totalCents,
         currency: 'DZD',
 
-        firstName: orderData.firstName.trim(),
-        lastName: orderData.lastName.trim(),
+        fullName: orderData.fullName.trim(),
         phone: orderData.phone.trim(),
         email: orderData.email?.trim() || null,
 

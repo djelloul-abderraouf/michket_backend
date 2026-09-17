@@ -45,14 +45,9 @@ export class CreateOrderDto {
   items!: CreateOrderItemDto[];
 
   @IsString()
-  @MinLength(1)
-  @MaxLength(100)
-  firstName!: string;
-
-  @IsString()
-  @MinLength(1)
-  @MaxLength(100)
-  lastName!: string;
+  @MinLength(2)
+  @MaxLength(200)
+  fullName!: string;
 
   @IsString()
   @MinLength(6)

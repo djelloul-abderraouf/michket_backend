@@ -202,8 +202,7 @@ type PaymentStatus =
 type DeliveryType = 'home' | 'office';
 
 export type UpdateAdminOrderInput = {
-  firstName?: string;
-  lastName?: string;
+  fullName?: string;
   phone?: string;
   email?: string | null;
 
@@ -600,14 +599,16 @@ export class AdminService {
         updatedAt: new Date(),
       };
 
-      if (input.firstName !== undefined) {
-        updateData.firstName =
-          input.firstName.trim();
-      }
+      if (input.fullName !== undefined) {
+        const fullName = input.fullName.trim();
 
-      if (input.lastName !== undefined) {
-        updateData.lastName =
-          input.lastName.trim();
+        if (!fullName) {
+          throw new BadRequestException(
+            'Customer full name is required',
+          );
+        }
+
+        updateData.fullName = fullName;
       }
 
       if (input.phone !== undefined) {
