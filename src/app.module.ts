@@ -6,6 +6,7 @@ import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './auth/auth.module';
 import { ProductsModule } from './products/products.module';
 import { CategoriesModule } from './categories/categories.module';
+import { ReferencesModule } from './references/references.module';
 import { CartsModule } from './carts/carts.module';
 import { OrdersModule } from './orders/orders.module';
 import { CacheModule } from './cache/cache.module';
@@ -29,6 +30,7 @@ import { MediaModule } from './media/media.module';
     AuthModule,
     ProductsModule,
     CategoriesModule,
+    ReferencesModule,
     CartsModule,
     OrdersModule,
     HealthModule,

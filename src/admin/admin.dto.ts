@@ -706,6 +706,64 @@ export class ReorderCategoryHeroImagesDto {
   images!: CategoryHeroImageOrderItemDto[];
 }
 
+// ── Client references ──
+
+export class CreateAdminReferenceDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  name!: string;
+
+  @IsUrl({
+    protocols: ['https'],
+    require_protocol: true,
+  })
+  imageUrl!: string;
+
+  @IsString()
+  @MinLength(1)
+  @MaxLength(500)
+  imageStoragePath!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  altText?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+}
+
+export class UpdateAdminReferenceDto extends PartialType(
+  CreateAdminReferenceDto,
+) {}
+
+export class AdminReferenceOrderItemDto {
+  @IsUUID()
+  referenceId!: string;
+
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sortOrder!: number;
+}
+
+export class ReorderAdminReferencesDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => AdminReferenceOrderItemDto)
+  references!: AdminReferenceOrderItemDto[];
+}
+
 export class CreateAdminPromotionDto {
   @IsString()
   @MinLength(1)

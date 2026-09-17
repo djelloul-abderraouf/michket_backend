@@ -24,6 +24,7 @@ import * as schema from '../database/schema';
 import {
   categories,
   categoryImages,
+  clientReferences,
   inventory,
   orderItems,
   orders,
@@ -192,6 +193,23 @@ export type CreateAdminPromotionInput = {
 
 export type UpdateAdminPromotionInput =
   Partial<CreateAdminPromotionInput>;
+
+export type CreateAdminReferenceInput = {
+  name: string;
+  imageUrl: string;
+  imageStoragePath: string;
+  altText?: string;
+  isActive?: boolean;
+  sortOrder?: number;
+};
+
+export type UpdateAdminReferenceInput =
+  Partial<CreateAdminReferenceInput>;
+
+export type AdminReferenceOrderInput = {
+  referenceId: string;
+  sortOrder: number;
+};
 
 type PaymentStatus =
   | 'pending'
@@ -3838,6 +3856,474 @@ export class AdminService {
     }
 
     return { message: 'Category hero image deleted successfully' };
+  }
+
+  // ──── CLIENT REFERENCES ────
+
+  async getAllReferences(
+    page = 1,
+    limit = 100,
+  ) {
+    const safePage = this.normalizePage(page);
+    const safeLimit = this.normalizeLimit(limit);
+
+    const [countResult] = await this.db
+      .select({
+        count: sql<number>`count(*)::int`,
+      })
+      .from(clientReferences);
+
+    const data = await this.db
+      .select()
+      .from(clientReferences)
+      .orderBy(
+        asc(clientReferences.sortOrder),
+        asc(clientReferences.name),
+        asc(clientReferences.createdAt),
+      )
+      .limit(safeLimit)
+      .offset((safePage - 1) * safeLimit);
+
+    const total = countResult?.count ?? 0;
+
+    return {
+      data,
+      meta: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages: Math.ceil(
+          total / safeLimit,
+        ),
+      },
+    };
+  }
+
+  async createReference(
+    input: CreateAdminReferenceInput,
+  ) {
+    const name = input.name.trim();
+    const imageUrl = input.imageUrl.trim();
+    const imageStoragePath =
+      input.imageStoragePath.trim();
+    const altText =
+      input.altText?.trim() || null;
+
+    if (!name) {
+      throw new BadRequestException(
+        'Reference name is required',
+      );
+    }
+
+    if (!imageUrl) {
+      throw new BadRequestException(
+        'Reference image URL is required',
+      );
+    }
+
+    if (!imageStoragePath) {
+      throw new BadRequestException(
+        'Reference image storage path is required',
+      );
+    }
+
+    try {
+      const [created] = await this.db
+        .insert(clientReferences)
+        .values({
+          name,
+          imageUrl,
+          imageStoragePath,
+          altText,
+          isActive: input.isActive ?? true,
+          sortOrder: input.sortOrder ?? 0,
+        })
+        .returning();
+
+      return created;
+    } catch (error) {
+      /*
+       * The image has already been uploaded before this service is called.
+       * If PostgreSQL rejects the new reference, remove the orphaned file.
+       */
+      try {
+        await this.mediaService.delete(
+          imageStoragePath,
+        );
+      } catch {
+        // Best-effort cleanup only.
+      }
+
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException(
+          'This reference image is already used',
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  async updateReference(
+    referenceId: string,
+    input: UpdateAdminReferenceInput,
+  ) {
+    const [existing] = await this.db
+      .select()
+      .from(clientReferences)
+      .where(
+        eq(
+          clientReferences.id,
+          referenceId,
+        ),
+      )
+      .limit(1);
+
+    if (!existing) {
+      throw new NotFoundException(
+        'Reference not found',
+      );
+    }
+
+    if (
+      Object.keys(input).length === 0
+    ) {
+      return existing;
+    }
+
+    if (
+      input.name !== undefined &&
+      !input.name.trim()
+    ) {
+      throw new BadRequestException(
+        'Reference name is required',
+      );
+    }
+
+    const imageUrlProvided =
+      input.imageUrl !== undefined;
+    const imageStoragePathProvided =
+      input.imageStoragePath !== undefined;
+
+    if (
+      imageUrlProvided !==
+      imageStoragePathProvided
+    ) {
+      throw new BadRequestException(
+        'imageUrl and imageStoragePath must be updated together',
+      );
+    }
+
+    const updateData: Partial<
+      typeof clientReferences.$inferInsert
+    > = {
+      updatedAt: new Date(),
+    };
+
+    if (input.name !== undefined) {
+      updateData.name =
+        input.name.trim();
+    }
+
+    let newImageStoragePath:
+      | string
+      | null = null;
+
+    const imageChanged =
+      imageUrlProvided &&
+      imageStoragePathProvided;
+
+    if (imageChanged) {
+      const imageUrl =
+        input.imageUrl!.trim();
+      const imageStoragePath =
+        input.imageStoragePath!.trim();
+
+      if (!imageUrl) {
+        throw new BadRequestException(
+          'Reference image URL is required',
+        );
+      }
+
+      if (!imageStoragePath) {
+        throw new BadRequestException(
+          'Reference image storage path is required',
+        );
+      }
+
+      updateData.imageUrl = imageUrl;
+      updateData.imageStoragePath =
+        imageStoragePath;
+      newImageStoragePath =
+        imageStoragePath;
+    }
+
+    if (input.altText !== undefined) {
+      updateData.altText =
+        input.altText?.trim() || null;
+    }
+
+    if (input.isActive !== undefined) {
+      updateData.isActive =
+        input.isActive;
+    }
+
+    if (input.sortOrder !== undefined) {
+      updateData.sortOrder =
+        input.sortOrder;
+    }
+
+    try {
+      const [updated] = await this.db
+        .update(clientReferences)
+        .set(updateData)
+        .where(
+          eq(
+            clientReferences.id,
+            referenceId,
+          ),
+        )
+        .returning();
+
+      if (!updated) {
+        throw new NotFoundException(
+          'Reference not found',
+        );
+      }
+
+      if (
+        imageChanged &&
+        existing.imageStoragePath &&
+        existing.imageStoragePath !==
+          newImageStoragePath
+      ) {
+        try {
+          await this.mediaService.delete(
+            existing.imageStoragePath,
+          );
+        } catch (error) {
+          if (
+            !(
+              error instanceof
+              NotFoundException
+            )
+          ) {
+            const message =
+              error instanceof Error
+                ? error.message
+                : String(error);
+
+            this.logger.warn(
+              `Reference "${existing.name}" (${existing.id}) was updated but old Storage cleanup failed for ${existing.imageStoragePath}: ${message}`,
+            );
+          }
+        }
+      }
+
+      return updated;
+    } catch (error) {
+      /*
+       * If a replacement image was uploaded but the DB update fails,
+       * remove that newly uploaded file to avoid leaving an orphan.
+       */
+      if (
+        imageChanged &&
+        newImageStoragePath &&
+        newImageStoragePath !==
+          existing.imageStoragePath
+      ) {
+        try {
+          await this.mediaService.delete(
+            newImageStoragePath,
+          );
+        } catch {
+          // Best-effort cleanup only.
+        }
+      }
+
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException(
+          'This reference image is already used',
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  async reorderReferences(
+    referenceOrders: AdminReferenceOrderInput[],
+  ) {
+    const referenceIds =
+      referenceOrders.map(
+        (item) =>
+          item.referenceId,
+      );
+
+    if (
+      new Set(referenceIds).size !==
+      referenceIds.length
+    ) {
+      throw new BadRequestException(
+        'Reference ids must be unique',
+      );
+    }
+
+    return this.db.transaction(
+      async (tx) => {
+        const existingReferences =
+          await tx
+            .select({
+              id: clientReferences.id,
+            })
+            .from(clientReferences)
+            .where(
+              inArray(
+                clientReferences.id,
+                referenceIds,
+              ),
+            )
+            .for('update');
+
+        if (
+          existingReferences.length !==
+          referenceIds.length
+        ) {
+          throw new BadRequestException(
+            'One or more references do not exist',
+          );
+        }
+
+        for (
+          const item of
+          referenceOrders
+        ) {
+          await tx
+            .update(
+              clientReferences,
+            )
+            .set({
+              sortOrder:
+                item.sortOrder,
+              updatedAt:
+                new Date(),
+            })
+            .where(
+              eq(
+                clientReferences.id,
+                item.referenceId,
+              ),
+            );
+        }
+
+        return tx
+          .select()
+          .from(clientReferences)
+          .orderBy(
+            asc(
+              clientReferences.sortOrder,
+            ),
+            asc(
+              clientReferences.name,
+            ),
+            asc(
+              clientReferences.createdAt,
+            ),
+          );
+      },
+    );
+  }
+
+  async deleteReference(
+    referenceId: string,
+  ) {
+    const deleted =
+      await this.db.transaction(
+        async (tx) => {
+          const [existing] =
+            await tx
+              .select()
+              .from(
+                clientReferences,
+              )
+              .where(
+                eq(
+                  clientReferences.id,
+                  referenceId,
+                ),
+              )
+              .for('update')
+              .limit(1);
+
+          if (!existing) {
+            throw new NotFoundException(
+              'Reference not found',
+            );
+          }
+
+          const [removed] =
+            await tx
+              .delete(
+                clientReferences,
+              )
+              .where(
+                eq(
+                  clientReferences.id,
+                  referenceId,
+                ),
+              )
+              .returning({
+                id:
+                  clientReferences.id,
+              });
+
+          if (!removed) {
+            throw new NotFoundException(
+              'Reference not found',
+            );
+          }
+
+          return {
+            id: removed.id,
+            name: existing.name,
+            storagePath:
+              existing.imageStoragePath,
+          };
+        },
+      );
+
+    let storageDeleted = false;
+
+    try {
+      await this.mediaService.delete(
+        deleted.storagePath,
+      );
+
+      storageDeleted = true;
+    } catch (error) {
+      if (
+        error instanceof
+        NotFoundException
+      ) {
+        storageDeleted = true;
+      } else {
+        const message =
+          error instanceof Error
+            ? error.message
+            : String(error);
+
+        this.logger.warn(
+          `Reference "${deleted.name}" (${deleted.id}) was deleted from PostgreSQL but Storage cleanup failed for ${deleted.storagePath}: ${message}`,
+        );
+      }
+    }
+
+    return {
+      success: true,
+      id: deleted.id,
+      permanentlyDeleted: true,
+      storageDeleted,
+    };
   }
 
   async getAllPromotions(

@@ -232,6 +232,93 @@ export class MediaController {
     );
   }
 
+  @Post('reference-images')
+  @RouteConfig({
+    rateLimit: {
+      max: 30,
+      timeWindow: '1 minute',
+    },
+  })
+  @ApiOperation({
+    summary: 'Upload a client reference image to Supabase Storage',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['file'],
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+      },
+    },
+  })
+  async uploadReferenceImage(
+    @Req() req: AuthenticatedRequest,
+  ) {
+    if (
+      req.user?.role !== 'admin' &&
+      req.user?.role !== 'super_admin'
+    ) {
+      throw new ForbiddenException(
+        'Admin access required',
+      );
+    }
+
+    const file = await req.file();
+
+    if (!file) {
+      throw new BadRequestException(
+        'Image file is required',
+      );
+    }
+
+    if (file.fieldname !== 'file') {
+      throw new BadRequestException(
+        'Multipart image field must be named "file"',
+      );
+    }
+
+    const mimetype = file.mimetype
+      .split(';', 1)[0]
+      .trim()
+      .toLowerCase();
+
+    const extension =
+      EXTENSION_BY_MIME[mimetype];
+
+    if (!extension) {
+      throw new BadRequestException(
+        'Only JPEG, PNG, WebP and AVIF images are allowed',
+      );
+    }
+
+    const buffer = await file.toBuffer();
+
+    if (file.file.truncated) {
+      throw new BadRequestException(
+        'Image exceeds the 10 MB limit',
+      );
+    }
+
+    const now = new Date();
+
+    const path = [
+      'references',
+      String(now.getUTCFullYear()),
+      String(now.getUTCMonth() + 1).padStart(2, '0'),
+      `${randomUUID()}.${extension}`,
+    ].join('/');
+
+    return this.mediaService.upload(
+      buffer,
+      path,
+      mimetype,
+    );
+  }
+
   @Delete('category-images')
   @HttpCode(204)
   @RouteConfig({
@@ -255,7 +342,6 @@ export class MediaController {
       );
     }
 
-    // Fastify: parse raw body to get storagePath
     const body = await req.body;
     const storagePath =
       typeof body === 'string'
@@ -276,21 +362,18 @@ export class MediaController {
       .trim()
       .replace(/^\/+/, '');
 
-    // No path traversal
     if (normalizedPath.includes('..')) {
       throw new BadRequestException(
         'Invalid storage path',
       );
     }
 
-    // Only allow categories/ prefix — never products/
     if (!normalizedPath.startsWith('categories/')) {
       throw new BadRequestException(
         'Only category image paths are allowed',
       );
     }
 
-    // Validate format: categories/YYYY/MM/filename.ext
     const pathPattern =
       /^categories\/\d{4}\/\d{2}\/[^/]+\.(jpg|jpeg|png|webp|avif)$/i;
 
@@ -301,6 +384,82 @@ export class MediaController {
     }
 
     await this.linkChecker.assertCategoryImageUnlinked(
+      normalizedPath,
+    );
+
+    await this.mediaService.delete(normalizedPath);
+  }
+
+  @Delete('reference-images')
+  @HttpCode(204)
+  @RouteConfig({
+    rateLimit: {
+      max: 30,
+      timeWindow: '1 minute',
+    },
+  })
+  @ApiOperation({
+    summary: 'Delete a client reference image from Supabase Storage (admin only)',
+  })
+  async deleteReferenceImage(
+    @Req() req: AuthenticatedRequest,
+  ) {
+    if (
+      req.user?.role !== 'admin' &&
+      req.user?.role !== 'super_admin'
+    ) {
+      throw new ForbiddenException(
+        'Admin access required',
+      );
+    }
+
+    const body = await req.body;
+    const storagePath =
+      typeof body === 'string'
+        ? (JSON.parse(body) as { storagePath?: string })?.storagePath
+        : (body as { storagePath?: string })?.storagePath;
+
+    if (
+      !storagePath ||
+      typeof storagePath !== 'string' ||
+      storagePath.trim().length === 0
+    ) {
+      throw new BadRequestException(
+        'storagePath is required',
+      );
+    }
+
+    const normalizedPath = storagePath
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '')
+      .replace(/\/{2,}/g, '/');
+
+    if (
+      normalizedPath.includes('..') ||
+      normalizedPath.startsWith('.')
+    ) {
+      throw new BadRequestException(
+        'Invalid storage path',
+      );
+    }
+
+    if (!normalizedPath.startsWith('references/')) {
+      throw new BadRequestException(
+        'Only reference image paths are allowed',
+      );
+    }
+
+    const pathPattern =
+      /^references\/\d{4}\/\d{2}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|jpeg|png|webp|avif)$/i;
+
+    if (!pathPattern.test(normalizedPath)) {
+      throw new BadRequestException(
+        'Invalid reference image path format',
+      );
+    }
+
+    await this.linkChecker.assertReferenceImageUnlinked(
       normalizedPath,
     );
 
@@ -352,7 +511,6 @@ export class MediaController {
       .replace(/^\/+/, '')
       .replace(/\/{2,}/g, '/');
 
-    // No path traversal
     if (
       normalizedPath.includes('..') ||
       normalizedPath.startsWith('.')
@@ -362,14 +520,24 @@ export class MediaController {
       );
     }
 
-    // Only allow products/ prefix — never categories/
     if (!normalizedPath.startsWith('products/')) {
       throw new BadRequestException(
         'Only product image paths are allowed',
       );
     }
 
-    // Validate format: products/YYYY/MM/<uuid>.ext
+    const extension =
+      normalizedPath
+        .split('.')
+        .pop()
+        ?.toLowerCase();
+
+    if (!extension || !ALLOWED_STORAGE_EXTENSIONS.has(extension)) {
+      throw new BadRequestException(
+        'Invalid product image path format',
+      );
+    }
+
     const pathPattern =
       /^products\/\d{4}\/\d{2}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(jpg|jpeg|png|webp|avif)$/i;
 

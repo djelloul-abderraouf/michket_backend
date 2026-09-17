@@ -29,8 +29,10 @@ import {
   CreateAdminProductImageDto,
   CreateAdminProductVariantDto,
   CreateAdminPromotionDto,
+  CreateAdminReferenceDto,
   CreateCategoryHeroImageDto,
   ReorderAdminProductImagesDto,
+  ReorderAdminReferencesDto,
   ReorderCategoryHeroImagesDto,
   UpdateAdminCategoryDto,
   UpdateAdminInventoryDto,
@@ -40,6 +42,7 @@ import {
   UpdateAdminProductImageDto,
   UpdateAdminProductVariantDto,
   UpdateAdminPromotionDto,
+  UpdateAdminReferenceDto,
   UpdateCategoryHeroImageDto,
   UpdateOrderStatusDto,
 } from './admin.dto';
@@ -472,6 +475,76 @@ export class AdminController {
     return this.adminService.updateInventory(
       id,
       body,
+    );
+  }
+
+  // ──── Client References ────
+
+  @Get('references')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Get all client references',
+  })
+  getAllReferences(
+    @Query() query: AdminPaginationDto,
+  ) {
+    return this.adminService.getAllReferences(
+      query.page,
+      query.limit,
+    );
+  }
+
+  @Post('references')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Create client reference',
+  })
+  createReference(
+    @Body() body: CreateAdminReferenceDto,
+  ) {
+    return this.adminService.createReference(
+      body,
+    );
+  }
+
+  @Put('references/reorder')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Reorder client references',
+  })
+  reorderReferences(
+    @Body() body: ReorderAdminReferencesDto,
+  ) {
+    return this.adminService.reorderReferences(
+      body.references,
+    );
+  }
+
+  @Put('references/:id')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Update client reference',
+  })
+  updateReference(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: UpdateAdminReferenceDto,
+  ) {
+    return this.adminService.updateReference(
+      id,
+      body,
+    );
+  }
+
+  @Delete('references/:id')
+  @Roles('admin', 'super_admin')
+  @ApiOperation({
+    summary: 'Delete client reference',
+  })
+  deleteReference(
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.adminService.deleteReference(
+      id,
     );
   }
 

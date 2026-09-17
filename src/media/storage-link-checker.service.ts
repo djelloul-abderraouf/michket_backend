@@ -3,7 +3,7 @@ import {
   Inject,
   Injectable,
 } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import {
@@ -89,6 +89,34 @@ export class StorageLinkCheckerService {
     if (heroRow) {
       throw new ConflictException(
         'Category hero image is already linked to a category',
+      );
+    }
+  }
+
+  /**
+   * Throws ConflictException if the storagePath is already
+   * linked to client_references.image_storage_path.
+   *
+   * This protects an official "Nos références" logo/image
+   * from being deleted by the orphan cleanup endpoint.
+   */
+  async assertReferenceImageUnlinked(
+    storagePath: string,
+  ): Promise<void> {
+    const [referenceRow] = await this.db
+      .select({ id: schema.clientReferences.id })
+      .from(schema.clientReferences)
+      .where(
+        eq(
+          schema.clientReferences.imageStoragePath,
+          storagePath,
+        ),
+      )
+      .limit(1);
+
+    if (referenceRow) {
+      throw new ConflictException(
+        'Reference image is already linked to a client reference',
       );
     }
   }
