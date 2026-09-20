@@ -50,7 +50,8 @@ export class StorageLinkCheckerService {
    * Throws ConflictException if the storagePath is already
    * linked to either:
    *   - categories.image_storage_path (main category photo)
-   *   - category_images.storage_path (hero images)
+   *   - category_images.storage_path (desktop hero image)
+   *   - category_images.mobile_storage_path (mobile hero image)
    *
    * Used by the orphan cleanup endpoint to prevent deleting
    * files that are officially associated with a category.
@@ -75,7 +76,7 @@ export class StorageLinkCheckerService {
       );
     }
 
-    const [heroRow] = await this.db
+    const [heroDesktopRow] = await this.db
       .select({ id: schema.categoryImages.id })
       .from(schema.categoryImages)
       .where(
@@ -86,9 +87,26 @@ export class StorageLinkCheckerService {
       )
       .limit(1);
 
-    if (heroRow) {
+    if (heroDesktopRow) {
       throw new ConflictException(
-        'Category hero image is already linked to a category',
+        'Category hero desktop image is already linked to a category',
+      );
+    }
+
+    const [heroMobileRow] = await this.db
+      .select({ id: schema.categoryImages.id })
+      .from(schema.categoryImages)
+      .where(
+        eq(
+          schema.categoryImages.mobileStoragePath,
+          storagePath,
+        ),
+      )
+      .limit(1);
+
+    if (heroMobileRow) {
+      throw new ConflictException(
+        'Category hero mobile image is already linked to a category',
       );
     }
   }

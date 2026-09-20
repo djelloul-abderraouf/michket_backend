@@ -657,6 +657,7 @@ export class UpdateAdminCategoryDto extends PartialType(
 // ── Category Hero Images ──
 
 export class CreateCategoryHeroImageDto {
+  // Image desktop / PC du slide Hero.
   @IsUrl({
     protocols: ['https'],
     require_protocol: true,
@@ -667,6 +668,18 @@ export class CreateCategoryHeroImageDto {
   @MinLength(1)
   @MaxLength(500)
   storagePath!: string;
+
+  // Image téléphone du même slide Hero.
+  @IsUrl({
+    protocols: ['https'],
+    require_protocol: true,
+  })
+  mobileUrl!: string;
+
+  @IsString()
+  @MinLength(1)
+  @MaxLength(500)
+  mobileStoragePath!: string;
 
   @IsOptional()
   @IsString()
@@ -681,10 +694,7 @@ export class CreateCategoryHeroImageDto {
 }
 
 export class UpdateCategoryHeroImageDto extends PartialType(
-  OmitType(CreateCategoryHeroImageDto, [
-    'url',
-    'storagePath',
-  ] as const),
+  CreateCategoryHeroImageDto,
 ) {}
 
 export class CategoryHeroImageOrderItemDto {

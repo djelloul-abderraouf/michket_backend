@@ -1713,6 +1713,8 @@ export class AdminService {
                   categoryImages.categoryId,
                 storagePath:
                   categoryImages.storagePath,
+                mobileStoragePath:
+                  categoryImages.mobileStoragePath,
               })
               .from(categoryImages)
               .where(
@@ -1758,9 +1760,11 @@ export class AdminService {
                     (category) =>
                       category.imageStoragePath,
                   ),
-                  ...heroImages.map(
-                    (image) =>
+                  ...heroImages.flatMap(
+                    (image) => [
                       image.storagePath,
+                      image.mobileStoragePath,
+                    ],
                   ),
                   ...productStoragePaths,
                 ].filter(
@@ -3711,151 +3715,508 @@ export class AdminService {
       .select()
       .from(categoryImages)
       .where(eq(categoryImages.categoryId, categoryId))
-      .orderBy(asc(categoryImages.sortOrder), asc(categoryImages.createdAt));
+      .orderBy(
+        asc(categoryImages.sortOrder),
+        asc(categoryImages.createdAt),
+      );
 
     return { ...category, heroImages };
   }
 
   async addCategoryHeroImage(
     categoryId: string,
-    input: { url: string; storagePath: string; altText?: string; sortOrder?: number },
+    input: {
+      url: string;
+      storagePath: string;
+      mobileUrl: string;
+      mobileStoragePath: string;
+      altText?: string;
+      sortOrder?: number;
+    },
   ) {
-    // Verify category exists and is a subcategory
     const [category] = await this.db
-      .select({ id: categories.id, parentId: categories.parentId })
+      .select({ id: categories.id })
       .from(categories)
-      .where(eq(categories.id, categoryId));
+      .where(eq(categories.id, categoryId))
+      .limit(1);
 
     if (!category) {
       throw new NotFoundException('Category not found');
     }
 
-    if (!category.parentId) {
-      throw new BadRequestException('Hero images are only allowed for subcategories');
+    const url = input.url.trim();
+    const storagePath = input.storagePath.trim();
+    const mobileUrl = input.mobileUrl.trim();
+    const mobileStoragePath =
+      input.mobileStoragePath.trim();
+
+    if (!url || !storagePath) {
+      throw new BadRequestException(
+        'Desktop hero image URL and storage path are required',
+      );
     }
 
-    // Check max 10 images
+    if (!mobileUrl || !mobileStoragePath) {
+      throw new BadRequestException(
+        'Mobile hero image URL and storage path are required',
+      );
+    }
+
     const [countResult] = await this.db
       .select({ count: count() })
       .from(categoryImages)
       .where(eq(categoryImages.categoryId, categoryId));
 
     if (countResult && countResult.count >= 10) {
-      throw new BadRequestException('Maximum 10 hero images per category');
+      throw new BadRequestException(
+        'Maximum 10 hero images per category',
+      );
     }
 
-    const sortOrder = input.sortOrder ?? 0;
+    try {
+      const [created] = await this.db
+        .insert(categoryImages)
+        .values({
+          categoryId,
+          url,
+          storagePath,
+          mobileUrl,
+          mobileStoragePath,
+          altText:
+            input.altText?.trim() || null,
+          sortOrder: input.sortOrder ?? 0,
+        })
+        .returning();
 
-    const [created] = await this.db
-      .insert(categoryImages)
-      .values({
-        categoryId,
-        url: input.url,
-        storagePath: input.storagePath,
-        altText: input.altText,
-        sortOrder,
-      })
-      .returning();
+      return created;
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException(
+          'One of these hero images is already linked to a category',
+        );
+      }
 
-    return created;
+      throw error;
+    }
   }
 
   async updateCategoryHeroImage(
     categoryId: string,
     imageId: string,
-    input: { altText?: string; sortOrder?: number },
+    input: {
+      url?: string;
+      storagePath?: string;
+      mobileUrl?: string;
+      mobileStoragePath?: string;
+      altText?: string;
+      sortOrder?: number;
+    },
   ) {
     const [image] = await this.db
       .select()
       .from(categoryImages)
-      .where(and(eq(categoryImages.id, imageId), eq(categoryImages.categoryId, categoryId)));
+      .where(
+        and(
+          eq(categoryImages.id, imageId),
+          eq(
+            categoryImages.categoryId,
+            categoryId,
+          ),
+        ),
+      )
+      .limit(1);
 
     if (!image) {
-      throw new NotFoundException('Category hero image not found');
+      throw new NotFoundException(
+        'Category hero image not found',
+      );
     }
 
-    const updateData: Record<string, unknown> = {};
-    if (input.altText !== undefined) updateData.altText = input.altText;
-    if (input.sortOrder !== undefined) updateData.sortOrder = input.sortOrder;
+    const desktopUrlProvided =
+      input.url !== undefined;
+    const desktopPathProvided =
+      input.storagePath !== undefined;
 
-    if (Object.keys(updateData).length === 0) {
+    if (
+      desktopUrlProvided !==
+      desktopPathProvided
+    ) {
+      throw new BadRequestException(
+        'Desktop hero URL and storage path must be updated together',
+      );
+    }
+
+    const mobileUrlProvided =
+      input.mobileUrl !== undefined;
+    const mobilePathProvided =
+      input.mobileStoragePath !== undefined;
+
+    if (
+      mobileUrlProvided !==
+      mobilePathProvided
+    ) {
+      throw new BadRequestException(
+        'Mobile hero URL and storage path must be updated together',
+      );
+    }
+
+    const updateData: Partial<
+      typeof categoryImages.$inferInsert
+    > = {};
+
+    let newDesktopStoragePath:
+      | string
+      | null = null;
+    let newMobileStoragePath:
+      | string
+      | null = null;
+
+    if (
+      desktopUrlProvided &&
+      desktopPathProvided
+    ) {
+      const url = input.url!.trim();
+      const storagePath =
+        input.storagePath!.trim();
+
+      if (!url || !storagePath) {
+        throw new BadRequestException(
+          'Desktop hero image URL and storage path are required',
+        );
+      }
+
+      updateData.url = url;
+      updateData.storagePath =
+        storagePath;
+      newDesktopStoragePath =
+        storagePath;
+    }
+
+    if (
+      mobileUrlProvided &&
+      mobilePathProvided
+    ) {
+      const mobileUrl =
+        input.mobileUrl!.trim();
+      const mobileStoragePath =
+        input.mobileStoragePath!.trim();
+
+      if (!mobileUrl || !mobileStoragePath) {
+        throw new BadRequestException(
+          'Mobile hero image URL and storage path are required',
+        );
+      }
+
+      updateData.mobileUrl = mobileUrl;
+      updateData.mobileStoragePath =
+        mobileStoragePath;
+      newMobileStoragePath =
+        mobileStoragePath;
+    }
+
+    if (input.altText !== undefined) {
+      updateData.altText =
+        input.altText.trim() || null;
+    }
+
+    if (input.sortOrder !== undefined) {
+      updateData.sortOrder =
+        input.sortOrder;
+    }
+
+    if (
+      Object.keys(updateData).length === 0
+    ) {
       return image;
     }
 
-    const [updated] = await this.db
-      .update(categoryImages)
-      .set(updateData)
-      .where(eq(categoryImages.id, imageId))
-      .returning();
+    try {
+      const [updated] = await this.db
+        .update(categoryImages)
+        .set(updateData)
+        .where(
+          and(
+            eq(categoryImages.id, imageId),
+            eq(
+              categoryImages.categoryId,
+              categoryId,
+            ),
+          ),
+        )
+        .returning();
 
-    return updated;
+      if (!updated) {
+        throw new NotFoundException(
+          'Category hero image not found',
+        );
+      }
+
+      const oldStoragePaths = [
+        newDesktopStoragePath &&
+        newDesktopStoragePath !==
+          image.storagePath
+          ? image.storagePath
+          : null,
+        newMobileStoragePath &&
+        newMobileStoragePath !==
+          image.mobileStoragePath
+          ? image.mobileStoragePath
+          : null,
+      ].filter(
+        (
+          storagePath,
+        ): storagePath is string =>
+          Boolean(storagePath),
+      );
+
+      for (const storagePath of oldStoragePaths) {
+        try {
+          await this.mediaService.delete(
+            storagePath,
+          );
+        } catch (error) {
+          if (
+            !(
+              error instanceof
+              NotFoundException
+            )
+          ) {
+            this.logger.warn(
+              `Category hero image ${imageId} was updated but old Storage cleanup failed for ${storagePath}: ${
+                error instanceof Error
+                  ? error.message
+                  : String(error)
+              }`,
+            );
+          }
+        }
+      }
+
+      return updated;
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new ConflictException(
+          'One of these hero images is already linked to a category',
+        );
+      }
+
+      throw error;
+    }
   }
 
   async reorderCategoryHeroImages(
     categoryId: string,
-    imageOrders: { imageId: string; sortOrder: number }[],
+    imageOrders: {
+      imageId: string;
+      sortOrder: number;
+    }[],
   ) {
-    // Verify all images belong to this category
-    const existingImages = await this.db
-      .select({ id: categoryImages.id })
-      .from(categoryImages)
-      .where(eq(categoryImages.categoryId, categoryId));
-
-    const validIds = new Set(existingImages.map((i) => i.id));
-
-    for (const order of imageOrders) {
-      if (!validIds.has(order.imageId)) {
-        throw new BadRequestException(
-          `Image ${order.imageId} does not belong to category ${categoryId}`,
-        );
-      }
-    }
-
-    // Update each image's sortOrder
-    const updates = imageOrders.map((order) =>
-      this.db
-        .update(categoryImages)
-        .set({ sortOrder: order.sortOrder })
-        .where(eq(categoryImages.id, order.imageId)),
+    const imageIds = imageOrders.map(
+      (item) => item.imageId,
     );
 
-    await Promise.all(updates);
-
-    // Return updated images
-    return this.db
-      .select()
-      .from(categoryImages)
-      .where(eq(categoryImages.categoryId, categoryId))
-      .orderBy(asc(categoryImages.sortOrder), asc(categoryImages.createdAt));
-  }
-
-  async deleteCategoryHeroImage(categoryId: string, imageId: string) {
-    const [image] = await this.db
-      .select()
-      .from(categoryImages)
-      .where(and(eq(categoryImages.id, imageId), eq(categoryImages.categoryId, categoryId)));
-
-    if (!image) {
-      throw new NotFoundException('Category hero image not found');
+    if (
+      new Set(imageIds).size !==
+      imageIds.length
+    ) {
+      throw new BadRequestException(
+        'Hero image ids must be unique',
+      );
     }
 
-    // Delete from DB
-    await this.db.delete(categoryImages).where(eq(categoryImages.id, imageId));
+    return this.db.transaction(
+      async (tx) => {
+        const [category] = await tx
+          .select({
+            id: categories.id,
+          })
+          .from(categories)
+          .where(
+            eq(
+              categories.id,
+              categoryId,
+            ),
+          )
+          .for('update')
+          .limit(1);
 
-    // Clean up Supabase Storage (best-effort, log but don't throw on failure)
-    if (image.storagePath) {
+        if (!category) {
+          throw new NotFoundException(
+            'Category not found',
+          );
+        }
+
+        const existingImages =
+          await tx
+            .select({
+              id: categoryImages.id,
+            })
+            .from(categoryImages)
+            .where(
+              and(
+                eq(
+                  categoryImages.categoryId,
+                  categoryId,
+                ),
+                inArray(
+                  categoryImages.id,
+                  imageIds,
+                ),
+              ),
+            );
+
+        if (
+          existingImages.length !==
+          imageIds.length
+        ) {
+          throw new BadRequestException(
+            'One or more hero images do not belong to this category',
+          );
+        }
+
+        for (const order of imageOrders) {
+          await tx
+            .update(categoryImages)
+            .set({
+              sortOrder:
+                order.sortOrder,
+            })
+            .where(
+              and(
+                eq(
+                  categoryImages.id,
+                  order.imageId,
+                ),
+                eq(
+                  categoryImages.categoryId,
+                  categoryId,
+                ),
+              ),
+            );
+        }
+
+        return tx
+          .select()
+          .from(categoryImages)
+          .where(
+            eq(
+              categoryImages.categoryId,
+              categoryId,
+            ),
+          )
+          .orderBy(
+            asc(
+              categoryImages.sortOrder,
+            ),
+            asc(
+              categoryImages.createdAt,
+            ),
+          );
+      },
+    );
+  }
+
+  async deleteCategoryHeroImage(
+    categoryId: string,
+    imageId: string,
+  ) {
+    const deleted =
+      await this.db.transaction(
+        async (tx) => {
+          const [image] = await tx
+            .select()
+            .from(categoryImages)
+            .where(
+              and(
+                eq(
+                  categoryImages.id,
+                  imageId,
+                ),
+                eq(
+                  categoryImages.categoryId,
+                  categoryId,
+                ),
+              ),
+            )
+            .for('update')
+            .limit(1);
+
+          if (!image) {
+            throw new NotFoundException(
+              'Category hero image not found',
+            );
+          }
+
+          await tx
+            .delete(categoryImages)
+            .where(
+              and(
+                eq(
+                  categoryImages.id,
+                  imageId,
+                ),
+                eq(
+                  categoryImages.categoryId,
+                  categoryId,
+                ),
+              ),
+            );
+
+          return {
+            id: image.id,
+            storagePaths: [
+              image.storagePath,
+              image.mobileStoragePath,
+            ].filter(
+              (
+                storagePath,
+              ): storagePath is string =>
+                Boolean(storagePath),
+            ),
+          };
+        },
+      );
+
+    let storageDeleted = 0;
+    let storageCleanupFailed = 0;
+
+    for (
+      const storagePath of
+      deleted.storagePaths
+    ) {
       try {
-        await this.mediaService.delete(image.storagePath);
+        await this.mediaService.delete(
+          storagePath,
+        );
+
+        storageDeleted += 1;
       } catch (error) {
-        // Log but don't throw — DB record is already deleted
+        if (
+          error instanceof
+          NotFoundException
+        ) {
+          storageDeleted += 1;
+          continue;
+        }
+
+        storageCleanupFailed += 1;
+
         this.logger.warn(
-          `Failed to delete category hero image from storage: ${image.storagePath}`,
-          error instanceof Error ? error.message : String(error),
+          `Category hero image ${deleted.id} was removed from PostgreSQL but Storage cleanup failed for ${storagePath}: ${
+            error instanceof Error
+              ? error.message
+              : String(error)
+          }`,
         );
       }
     }
 
-    return { message: 'Category hero image deleted successfully' };
+    return {
+      success: true,
+      id: deleted.id,
+      storageDeleted,
+      storageCleanupFailed,
+    };
   }
 
   // ──── CLIENT REFERENCES ────
