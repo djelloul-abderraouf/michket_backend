@@ -22,10 +22,16 @@ type SharpFactory = (
 const sharp = sharpModule as unknown as SharpFactory;
 
 const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
+
+const PRODUCT_MAX_DIMENSION = 1600;
+const PRODUCT_WEBP_QUALITY = 82;
+const PRODUCT_WEBP_EFFORT = 4;
+
 const CATEGORY_LANDSCAPE_MAX_WIDTH = 1920;
 const CATEGORY_PORTRAIT_MAX_WIDTH = 1080;
 const CATEGORY_WEBP_QUALITY = 80;
 const CATEGORY_WEBP_EFFORT = 4;
+
 const STORAGE_CACHE_CONTROL_SECONDS = '31536000';
 
 type AllowedImageType =
@@ -99,6 +105,96 @@ export class MediaService {
   }
 
   /**
+   * Optimize product images before they reach Supabase Storage.
+   *
+   * Product images can be displayed as large cards, the main product image
+   * and the full-screen gallery. The backend therefore keeps enough source
+   * resolution for those views while avoiding multi-megabyte originals:
+   * - validates the real file bytes;
+   * - applies EXIF orientation;
+   * - caps both width and height at 1600 px;
+   * - never enlarges smaller images;
+   * - converts the final asset to WebP;
+   * - stores it with a one-year cache lifetime.
+   *
+   * WebP also preserves transparency, so transparent PNG product images
+   * remain transparent after optimization.
+   */
+  async uploadOptimizedProductImage(
+    file: Buffer,
+    path: string,
+    contentType: string,
+  ): Promise<{
+    url: string;
+    path: string;
+  }> {
+    this.validateImage(file, contentType);
+
+    const safePath = this.normalizePath(path);
+    const webpPath = this.replaceExtension(
+      safePath,
+      'webp',
+    );
+
+    let metadata: { width?: number; height?: number };
+    let optimizedFile: Buffer;
+
+    try {
+      metadata = await sharp(file, {
+        failOn: 'error',
+      }).metadata();
+
+      if (!metadata.width || !metadata.height) {
+        throw new Error(
+          'Unable to determine image dimensions',
+        );
+      }
+
+      optimizedFile = await sharp(file, {
+        failOn: 'error',
+      })
+        .rotate()
+        .resize({
+          width: PRODUCT_MAX_DIMENSION,
+          height: PRODUCT_MAX_DIMENSION,
+          withoutEnlargement: true,
+          fit: 'inside',
+        })
+        .webp({
+          quality: PRODUCT_WEBP_QUALITY,
+          effort: PRODUCT_WEBP_EFFORT,
+          smartSubsample: true,
+        })
+        .toBuffer();
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Unknown image processing error';
+
+      this.logger.error(
+        `Product image optimization failed for "${safePath}": ${message}`,
+      );
+
+      throw new BadRequestException(
+        'Unable to process product image',
+      );
+    }
+
+    await this.uploadToStorage(
+      optimizedFile,
+      webpPath,
+      'image/webp',
+    );
+
+    this.logger.log(
+      `Optimized product image "${safePath}" -> "${webpPath}" (${file.length} bytes -> ${optimizedFile.length} bytes)`,
+    );
+
+    return this.getUploadedFileResult(webpPath);
+  }
+
+  /**
    * Optimize category images before they reach Supabase Storage.
    *
    * The admin may upload JPEG, PNG, WebP or AVIF. The backend:
@@ -114,7 +210,7 @@ export class MediaService {
    * it is much faster and cheaper to encode on constrained hosting,
    * while still reducing category hero payloads dramatically.
    *
-   * Product and reference image uploads keep using upload() unchanged.
+   * Reference image uploads keep using upload() unchanged.
    */
   async uploadOptimizedCategoryImage(
     file: Buffer,

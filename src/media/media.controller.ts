@@ -66,7 +66,7 @@ export class MediaController {
     },
   })
   @ApiOperation({
-    summary: 'Upload a product image to Supabase Storage',
+    summary: 'Upload and optimize a product image to Supabase Storage',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -112,10 +112,7 @@ export class MediaController {
       .trim()
       .toLowerCase();
 
-    const extension =
-      EXTENSION_BY_MIME[mimetype];
-
-    if (!extension) {
+    if (!EXTENSION_BY_MIME[mimetype]) {
       throw new BadRequestException(
         'Only JPEG, PNG, WebP and AVIF images are allowed',
       );
@@ -131,14 +128,16 @@ export class MediaController {
 
     const now = new Date();
 
+    // Product images are normalized to WebP by MediaService.
+    // The source extension is intentionally not preserved.
     const path = [
       'products',
       String(now.getUTCFullYear()),
       String(now.getUTCMonth() + 1).padStart(2, '0'),
-      `${randomUUID()}.${extension}`,
+      `${randomUUID()}.webp`,
     ].join('/');
 
-    return this.mediaService.upload(
+    return this.mediaService.uploadOptimizedProductImage(
       buffer,
       path,
       mimetype,
