@@ -457,6 +457,7 @@ export class CrmOrdersService extends CrmBaseService {
         carrier: shipment?.provider ?? null,
         carrierStatus: shipment?.status ?? null,
         shipmentId: shipment?.id ?? null,
+        labelUrl: this.extractShipmentLabel(shipment?.metadata),
         deliveredAt: this.toIso(order.deliveredAt),
         shippedAt: this.toIso(order.shippedAt),
         cancelledAt: this.toIso(order.cancelledAt),
@@ -549,5 +550,14 @@ export class CrmOrdersService extends CrmBaseService {
     const timePart = Date.now().toString(36).toUpperCase();
     const randomPart = randomBytes(4).toString('hex').toUpperCase();
     return `CRM-${timePart}-${randomPart}`;
+  }
+
+  private extractShipmentLabel(metadata: unknown) {
+    if (!metadata || typeof metadata !== 'object') {
+      return null;
+    }
+    const record = metadata as Record<string, unknown>;
+    const value = record.label || record.label_url || record.labelUrl;
+    return typeof value === 'string' ? value : null;
   }
 }
