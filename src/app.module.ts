@@ -9,7 +9,6 @@ import { CategoriesModule } from './categories/categories.module';
 import { ReferencesModule } from './references/references.module';
 import { CartsModule } from './carts/carts.module';
 import { OrdersModule } from './orders/orders.module';
-import { CacheModule } from './cache/cache.module';
 import { HealthModule } from './health/health.module';
 import { AdminModule } from './admin/admin.module';
 import { DeliveryModule } from './delivery/delivery.module';
@@ -26,7 +25,6 @@ import { MediaModule } from './media/media.module';
     }),
 
     DatabaseModule,
-    CacheModule,
     AuthModule,
     ProductsModule,
     CategoriesModule,
