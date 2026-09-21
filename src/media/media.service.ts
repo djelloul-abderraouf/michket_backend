@@ -10,13 +10,13 @@ import {
   createClient,
   SupabaseClient,
 } from '@supabase/supabase-js';
-import sharp from 'sharp';
+import sharp, { type Metadata } from 'sharp';
 
 const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
 const CATEGORY_LANDSCAPE_MAX_WIDTH = 1920;
 const CATEGORY_PORTRAIT_MAX_WIDTH = 1080;
-const CATEGORY_AVIF_QUALITY = 65;
-const CATEGORY_AVIF_EFFORT = 6;
+const CATEGORY_WEBP_QUALITY = 80;
+const CATEGORY_WEBP_EFFORT = 4;
 const STORAGE_CACHE_CONTROL_SECONDS = '31536000';
 
 type AllowedImageType =
@@ -98,8 +98,12 @@ export class MediaService {
    * - caps oversized landscape images at 1920 px wide;
    * - caps portrait/square images at 1080 px wide;
    * - never enlarges smaller images;
-   * - converts the final asset to AVIF;
+   * - converts the final asset to WebP;
    * - stores it with a one-year cache lifetime.
+   *
+   * WebP is intentionally used here instead of server-side AVIF:
+   * it is much faster and cheaper to encode on constrained hosting,
+   * while still reducing category hero payloads dramatically.
    *
    * Product and reference image uploads keep using upload() unchanged.
    */
@@ -114,19 +118,20 @@ export class MediaService {
     this.validateImage(file, contentType);
 
     const safePath = this.normalizePath(path);
-    const avifPath = this.replaceExtension(
+    const webpPath = this.replaceExtension(
       safePath,
-      'avif',
+      'webp',
     );
 
+    let metadata: Metadata;
     let optimizedFile: Buffer;
 
     try {
-      const image = sharp(file, {
-        failOn: 'warning',
-      }).rotate();
-
-      const metadata = await image.metadata();
+      metadata = await sharp(file, {
+        // Reject genuinely broken images, but do not reject harmless
+        // decoder warnings commonly found in otherwise valid PNG/JPEG files.
+        failOn: 'error',
+      }).metadata();
 
       if (!metadata.width || !metadata.height) {
         throw new Error(
@@ -141,15 +146,20 @@ export class MediaService {
         ? CATEGORY_LANDSCAPE_MAX_WIDTH
         : CATEGORY_PORTRAIT_MAX_WIDTH;
 
-      optimizedFile = await image
+      // Use a fresh pipeline for transformation after metadata inspection.
+      optimizedFile = await sharp(file, {
+        failOn: 'error',
+      })
+        .rotate()
         .resize({
           width: maxWidth,
           withoutEnlargement: true,
           fit: 'inside',
         })
-        .avif({
-          quality: CATEGORY_AVIF_QUALITY,
-          effort: CATEGORY_AVIF_EFFORT,
+        .webp({
+          quality: CATEGORY_WEBP_QUALITY,
+          effort: CATEGORY_WEBP_EFFORT,
+          smartSubsample: true,
         })
         .toBuffer();
     } catch (error) {
@@ -169,15 +179,15 @@ export class MediaService {
 
     await this.uploadToStorage(
       optimizedFile,
-      avifPath,
-      'image/avif',
+      webpPath,
+      'image/webp',
     );
 
     this.logger.log(
-      `Optimized category image "${safePath}" -> "${avifPath}" (${file.length} bytes -> ${optimizedFile.length} bytes)`,
+      `Optimized category image "${safePath}" -> "${webpPath}" (${file.length} bytes -> ${optimizedFile.length} bytes)`,
     );
 
-    return this.getUploadedFileResult(avifPath);
+    return this.getUploadedFileResult(webpPath);
   }
 
   async delete(path: string): Promise<void> {
