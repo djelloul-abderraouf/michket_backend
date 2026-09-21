@@ -11,7 +11,6 @@ import {
 import helmet from '@fastify/helmet';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
-import IORedis from 'ioredis';
 
 import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/http-exception.filter';
@@ -28,8 +27,6 @@ async function bootstrap() {
   const apiPrefix =
     process.env.API_PREFIX || 'api/v1';
 
-  const redisUrl = process.env.REDIS_URL;
-
   const app =
     await NestFactory.create<NestFastifyApplication>(
       AppModule,
@@ -44,74 +41,23 @@ async function bootstrap() {
 
   await app.register(helmet);
 
-  let rateLimitRedis: IORedis | undefined;
-
-  if (redisUrl) {
-    const redisCandidate = new IORedis(
-      redisUrl,
-      {
-        maxRetriesPerRequest: 1,
-        enableReadyCheck: true,
-        lazyConnect: true,
-        connectTimeout: 10000,
-        retryStrategy: (times) =>
-          Math.min(times * 1000, 10000),
-      },
-    );
-
-    redisCandidate.on('error', (error) => {
-      logger.error(
-        `Rate-limit Redis error: ${error.message}`,
-      );
-    });
-
-    redisCandidate.on('reconnecting', (delay: number) => {
-      logger.warn(
-        `Rate-limit Redis reconnecting in ${delay} ms`,
-      );
-    });
-
-    redisCandidate.on('ready', () => {
-      logger.log(
-        'Rate-limit Redis connection ready',
-      );
-    });
-
-    try {
-      await redisCandidate.connect();
-      await redisCandidate.ping();
-
-      rateLimitRedis = redisCandidate;
-
-      logger.log(
-        'Rate limiting backend: Redis',
-      );
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Unknown Redis error';
-
-      logger.warn(
-        `Rate-limit Redis unavailable during startup: ${message}. Falling back to local memory for this process.`,
-      );
-
-      redisCandidate.disconnect();
-    }
-  } else {
-    logger.warn(
-      'REDIS_URL is missing: rate limiting uses local memory only',
-    );
-  }
-
+  /*
+   * Rate limiting intentionally uses Fastify's in-process memory store.
+   *
+   * Redis used to back this limiter, but that created a permanent Redis
+   * dependency and consumed the Upstash request quota even though the API
+   * can operate without Redis.
+   *
+   * This keeps protection active without making API availability depend
+   * on Upstash. The limiter is per Node.js process, which is appropriate
+   * for the current deployment. If the backend is scaled to several
+   * application instances later, use a shared rate-limit store designed
+   * for that deployment.
+   */
   await app.register(rateLimit, {
     global: true,
     max: GLOBAL_RATE_LIMIT_MAX,
     timeWindow: '1 minute',
-    redis: rateLimitRedis,
-
-    // If Redis becomes unavailable after startup, do not fail API requests.
-    skipOnError: true,
 
     ipv6Subnet: 64,
 
@@ -121,21 +67,9 @@ async function bootstrap() {
       ),
   });
 
-  if (rateLimitRedis) {
-    app
-      .getHttpAdapter()
-      .getInstance()
-      .addHook('onClose', async () => {
-        if (
-          rateLimitRedis?.status === 'ready'
-        ) {
-          await rateLimitRedis.quit();
-          return;
-        }
-
-        rateLimitRedis?.disconnect();
-      });
-  }
+  logger.log(
+    'Rate limiting backend: local memory',
+  );
 
   await app.register(multipart, {
     limits: {
