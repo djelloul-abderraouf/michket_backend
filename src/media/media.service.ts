@@ -10,7 +10,16 @@ import {
   createClient,
   SupabaseClient,
 } from '@supabase/supabase-js';
-import sharp, { type Metadata } from 'sharp';
+import sharpModule = require('sharp');
+
+type SharpFactory = (
+  input: Buffer,
+  options?: {
+    failOn?: 'none' | 'truncated' | 'error' | 'warning';
+  },
+) => any;
+
+const sharp = sharpModule as unknown as SharpFactory;
 
 const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
 const CATEGORY_LANDSCAPE_MAX_WIDTH = 1920;
@@ -123,7 +132,7 @@ export class MediaService {
       'webp',
     );
 
-    let metadata: Metadata;
+    let metadata: { width?: number; height?: number };
     let optimizedFile: Buffer;
 
     try {
