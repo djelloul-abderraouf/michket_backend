@@ -37,7 +37,6 @@ import {
 } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { DeliveryService } from '../delivery/delivery.service';
-import { OrderExpirationQueueService } from '../queue/order-expiration.queue';
 import { PromotionsService } from '../promotions/promotions.service';
 
 type DbTransaction = Parameters<
@@ -122,7 +121,6 @@ export class OrdersService {
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
     private readonly deliveryService: DeliveryService,
-    private readonly orderExpirationQueue: OrderExpirationQueueService,
     private readonly promotionsService: PromotionsService,
     configService: ConfigService,
   ) {
@@ -357,8 +355,6 @@ export class OrdersService {
       return result;
     });
 
-    await this.schedulePendingOrderExpiration(result.id);
-
     return result;
   }
 
@@ -490,10 +486,7 @@ export class OrdersService {
       const currentStatus = order.status;
 
       if (currentStatus === status) {
-        return {
-          order: this.sanitizeOrder(order),
-          leftPending: false,
-        };
+        return this.sanitizeOrder(order);
       }
 
       const allowed =
@@ -568,19 +561,10 @@ export class OrdersService {
         reason: reason?.trim() || null,
       });
 
-      return {
-        order: this.sanitizeOrder(updated),
-        leftPending:
-          currentStatus === 'pending' &&
-          status !== 'pending',
-      };
+      return this.sanitizeOrder(updated);
     });
 
-    if (result.leftPending) {
-      await this.removePendingOrderExpiration(orderId);
-    }
-
-    return result.order;
+    return result;
   }
 
   async expirePendingOrder(
@@ -1167,57 +1151,6 @@ export class OrdersService {
       .toUpperCase();
 
     return `MICH-${timePart}-${randomPart}`;
-  }
-
-  private async schedulePendingOrderExpiration(
-    orderId: string,
-  ): Promise<void> {
-    try {
-      const [order] = await this.db
-        .select({
-          status: orders.status,
-        })
-        .from(orders)
-        .where(eq(orders.id, orderId))
-        .limit(1);
-
-      if (!order || order.status !== 'pending') {
-        return;
-      }
-
-      await this.orderExpirationQueue.schedule(orderId);
-    } catch (error) {
-      // The order is already safely committed in PostgreSQL.
-      // Do not fail checkout only because the background queue is temporarily unavailable.
-      const message =
-        error instanceof Error
-          ? error.message
-          : String(error);
-
-      console.error(
-        `Unable to schedule pending-order expiration for ${orderId}: ${message}`,
-      );
-    }
-  }
-
-  private async removePendingOrderExpiration(
-    orderId: string,
-  ): Promise<void> {
-    try {
-      await this.orderExpirationQueue.remove(orderId);
-    } catch (error) {
-      // PostgreSQL remains the source of truth. Even if Redis is
-      // temporarily unavailable, the worker re-checks the order
-      // status before attempting any automatic cancellation.
-      const message =
-        error instanceof Error
-          ? error.message
-          : String(error);
-
-      console.error(
-        `Unable to remove pending-order expiration for ${orderId}: ${message}`,
-      );
-    }
   }
 
   private sanitizeOrder(
