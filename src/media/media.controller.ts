@@ -153,7 +153,8 @@ export class MediaController {
     },
   })
   @ApiOperation({
-    summary: 'Upload a category image to Supabase Storage',
+    summary:
+      'Upload and optimize a category image to Supabase Storage',
   })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -199,10 +200,7 @@ export class MediaController {
       .trim()
       .toLowerCase();
 
-    const extension =
-      EXTENSION_BY_MIME[mimetype];
-
-    if (!extension) {
+    if (!EXTENSION_BY_MIME[mimetype]) {
       throw new BadRequestException(
         'Only JPEG, PNG, WebP and AVIF images are allowed',
       );
@@ -218,14 +216,16 @@ export class MediaController {
 
     const now = new Date();
 
+    // Category images are normalized to AVIF by MediaService.
+    // The source extension is intentionally not preserved.
     const path = [
       'categories',
       String(now.getUTCFullYear()),
       String(now.getUTCMonth() + 1).padStart(2, '0'),
-      `${randomUUID()}.${extension}`,
+      `${randomUUID()}.avif`,
     ].join('/');
 
-    return this.mediaService.upload(
+    return this.mediaService.uploadOptimizedCategoryImage(
       buffer,
       path,
       mimetype,

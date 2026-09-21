@@ -10,8 +10,14 @@ import {
   createClient,
   SupabaseClient,
 } from '@supabase/supabase-js';
+import sharp from 'sharp';
 
 const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024;
+const CATEGORY_LANDSCAPE_MAX_WIDTH = 1920;
+const CATEGORY_PORTRAIT_MAX_WIDTH = 1080;
+const CATEGORY_AVIF_QUALITY = 65;
+const CATEGORY_AVIF_EFFORT = 6;
+const STORAGE_CACHE_CONTROL_SECONDS = '31536000';
 
 type AllowedImageType =
   | 'image/jpeg'
@@ -74,42 +80,104 @@ export class MediaService {
 
     const safePath = this.normalizePath(path);
 
-    const { error } = await this.supabase.storage
-      .from(this.bucket)
-      .upload(safePath, file, {
-        // Never trust the MIME type sent by the client.
-        // Store the type detected from the actual file bytes.
-        contentType: detectedContentType,
-        upsert: false,
-        cacheControl: '31536000',
-      });
+    await this.uploadToStorage(
+      file,
+      safePath,
+      detectedContentType,
+    );
 
-    if (error) {
-      this.logger.error(
-        `Supabase upload failed for "${safePath}": ${error.message}`,
-      );
+    return this.getUploadedFileResult(safePath);
+  }
 
-      if (
-        error.message.toLowerCase().includes('already exists')
-      ) {
-        throw new BadRequestException(
-          'A file already exists at this path',
+  /**
+   * Optimize category images before they reach Supabase Storage.
+   *
+   * The admin may upload JPEG, PNG, WebP or AVIF. The backend:
+   * - validates the real file bytes;
+   * - applies EXIF orientation;
+   * - caps oversized landscape images at 1920 px wide;
+   * - caps portrait/square images at 1080 px wide;
+   * - never enlarges smaller images;
+   * - converts the final asset to AVIF;
+   * - stores it with a one-year cache lifetime.
+   *
+   * Product and reference image uploads keep using upload() unchanged.
+   */
+  async uploadOptimizedCategoryImage(
+    file: Buffer,
+    path: string,
+    contentType: string,
+  ): Promise<{
+    url: string;
+    path: string;
+  }> {
+    this.validateImage(file, contentType);
+
+    const safePath = this.normalizePath(path);
+    const avifPath = this.replaceExtension(
+      safePath,
+      'avif',
+    );
+
+    let optimizedFile: Buffer;
+
+    try {
+      const image = sharp(file, {
+        failOn: 'warning',
+      }).rotate();
+
+      const metadata = await image.metadata();
+
+      if (!metadata.width || !metadata.height) {
+        throw new Error(
+          'Unable to determine image dimensions',
         );
       }
 
-      throw new InternalServerErrorException(
-        'Unable to upload image',
+      const isLandscape =
+        metadata.width > metadata.height;
+
+      const maxWidth = isLandscape
+        ? CATEGORY_LANDSCAPE_MAX_WIDTH
+        : CATEGORY_PORTRAIT_MAX_WIDTH;
+
+      optimizedFile = await image
+        .resize({
+          width: maxWidth,
+          withoutEnlargement: true,
+          fit: 'inside',
+        })
+        .avif({
+          quality: CATEGORY_AVIF_QUALITY,
+          effort: CATEGORY_AVIF_EFFORT,
+        })
+        .toBuffer();
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Unknown image processing error';
+
+      this.logger.error(
+        `Category image optimization failed for "${safePath}": ${message}`,
+      );
+
+      throw new BadRequestException(
+        'Unable to process category image',
       );
     }
 
-    const { data } = this.supabase.storage
-      .from(this.bucket)
-      .getPublicUrl(safePath);
+    await this.uploadToStorage(
+      optimizedFile,
+      avifPath,
+      'image/avif',
+    );
 
-    return {
-      url: data.publicUrl,
-      path: safePath,
-    };
+    this.logger.log(
+      `Optimized category image "${safePath}" -> "${avifPath}" (${file.length} bytes -> ${optimizedFile.length} bytes)`,
+    );
+
+    return this.getUploadedFileResult(avifPath);
   }
 
   async delete(path: string): Promise<void> {
@@ -175,6 +243,77 @@ export class MediaService {
       .getPublicUrl(safePath);
 
     return data.publicUrl;
+  }
+
+  private async uploadToStorage(
+    file: Buffer,
+    safePath: string,
+    contentType: AllowedImageType,
+  ): Promise<void> {
+    const { error } = await this.supabase.storage
+      .from(this.bucket)
+      .upload(safePath, file, {
+        contentType,
+        upsert: false,
+        cacheControl:
+          STORAGE_CACHE_CONTROL_SECONDS,
+      });
+
+    if (error) {
+      this.logger.error(
+        `Supabase upload failed for "${safePath}": ${error.message}`,
+      );
+
+      if (
+        error.message.toLowerCase().includes('already exists')
+      ) {
+        throw new BadRequestException(
+          'A file already exists at this path',
+        );
+      }
+
+      throw new InternalServerErrorException(
+        'Unable to upload image',
+      );
+    }
+  }
+
+  private getUploadedFileResult(
+    safePath: string,
+  ): {
+    url: string;
+    path: string;
+  } {
+    const { data } = this.supabase.storage
+      .from(this.bucket)
+      .getPublicUrl(safePath);
+
+    return {
+      url: data.publicUrl,
+      path: safePath,
+    };
+  }
+
+  private replaceExtension(
+    path: string,
+    extension: string,
+  ): string {
+    const lastSlash = path.lastIndexOf('/');
+    const fileName =
+      lastSlash >= 0
+        ? path.slice(lastSlash + 1)
+        : path;
+
+    const lastDot = fileName.lastIndexOf('.');
+
+    if (lastDot <= 0) {
+      return `${path}.${extension}`;
+    }
+
+    return `${path.slice(
+      0,
+      path.length - fileName.length + lastDot,
+    )}.${extension}`;
   }
 
   private validateImage(
