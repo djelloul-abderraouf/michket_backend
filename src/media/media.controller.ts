@@ -216,13 +216,13 @@ export class MediaController {
 
     const now = new Date();
 
-    // Category images are normalized to AVIF by MediaService.
+    // Category images are normalized to WebP by MediaService.
     // The source extension is intentionally not preserved.
     const path = [
       'categories',
       String(now.getUTCFullYear()),
       String(now.getUTCMonth() + 1).padStart(2, '0'),
-      `${randomUUID()}.avif`,
+      `${randomUUID()}.webp`,
     ].join('/');
 
     return this.mediaService.uploadOptimizedCategoryImage(
