@@ -1,7 +1,6 @@
 import {
   Controller,
   Get,
-  Inject,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import {
@@ -10,15 +9,12 @@ import {
 } from '@nestjs/swagger';
 import { sql } from 'drizzle-orm';
 import { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import IORedis from 'ioredis';
+import { Inject } from '@nestjs/common';
 
 import * as schema from '../database/schema';
 import {
   DATABASE_CONNECTION,
 } from '../database/database.module';
-import {
-  QUEUE_REDIS_CONNECTION,
-} from '../queue/queue.module';
 
 @ApiTags('Health')
 @Controller('health')
@@ -26,9 +22,6 @@ export class HealthController {
   constructor(
     @Inject(DATABASE_CONNECTION)
     private readonly db: NodePgDatabase<typeof schema>,
-
-    @Inject(QUEUE_REDIS_CONNECTION)
-    private readonly redis: IORedis,
   ) {}
 
   @Get()
@@ -43,43 +36,27 @@ export class HealthController {
 
   @Get('ready')
   @ApiOperation({
-    summary: 'Readiness check (PostgreSQL, Redis)',
+    summary: 'Readiness check (PostgreSQL)',
   })
   async ready() {
-    const checks: Record<
-      'database' | 'redis',
-      'ok' | 'error'
-    > = {
-      database: 'error',
-      redis: 'error',
-    };
+    let database: 'ok' | 'error' = 'error';
 
     try {
       await this.db.execute(sql`SELECT 1`);
-      checks.database = 'ok';
+      database = 'ok';
     } catch {
-      checks.database = 'error';
+      database = 'error';
     }
-
-    try {
-      const pong = await this.redis.ping();
-      checks.redis =
-        pong === 'PONG' ? 'ok' : 'error';
-    } catch {
-      checks.redis = 'error';
-    }
-
-    const allOk =
-      checks.database === 'ok' &&
-      checks.redis === 'ok';
 
     const body = {
-      status: allOk ? 'ok' : 'degraded',
-      checks,
+      status: database === 'ok' ? 'ok' : 'degraded',
+      checks: {
+        database,
+      },
       timestamp: new Date().toISOString(),
     };
 
-    if (!allOk) {
+    if (database !== 'ok') {
       throw new ServiceUnavailableException(body);
     }
 
