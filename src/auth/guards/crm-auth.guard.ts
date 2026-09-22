@@ -4,7 +4,6 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { Request } from 'express';
 
 import { AuthService } from '../auth.service';
 
@@ -17,7 +16,7 @@ export type CrmRequestUser = {
   roles: string[];
 };
 
-interface CrmRequest extends Request {
+interface CrmRequest {
   user?: {
     id: string;
     email: string;
