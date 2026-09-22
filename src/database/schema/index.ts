@@ -47,4 +47,4 @@ export {
   crmTasks,
   crmActivities,
   crmLoginAudit,
-} from './crm';
+} from './crm-tables';
