@@ -3,7 +3,7 @@ import {
   Get,
   Param,
   Post,
-  Res,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -11,7 +11,6 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
-import type { FastifyReply } from 'fastify';
 
 import { CrmAuthGuard } from '../auth/guards/crm-auth.guard';
 import { CrmRolesGuard } from '../auth/guards/crm-roles.guard';
@@ -41,24 +40,22 @@ export class CrmDeliveryController {
   }
 
   @Get('yalidine/:orderId/label')
-  @ApiOperation({ summary: 'Get printable Yalidine label URL' })
-  @CrmRoles('admin', 'livraison', 'preparation', 'confirmation')
+  @ApiOperation({ summary: 'Get official Yalidine bordereau URL' })
+  @CrmRoles('admin', 'livraison', 'preparation', 'confirmation', 'commercial')
   async yalidineLabel(@Param('orderId') orderId: string) {
     return this.crmDeliveryService.getYalidineLabelUrl(orderId);
   }
 
   @Get('bordereau/:orderId')
-  @ApiOperation({ summary: 'Download shipping slip PDF for a confirmed order' })
+  @ApiOperation({ summary: 'Download official Yalidine bordereau for an order' })
   @CrmRoles('admin', 'livraison', 'preparation', 'confirmation', 'commercial')
-  async bordereau(
-    @Param('orderId') orderId: string,
-    @Res() reply: FastifyReply,
-  ) {
-    const { filename, buffer } = await this.crmDeliveryService.buildBordereau(orderId);
-    reply
-      .header('Content-Type', 'application/pdf')
-      .header('Content-Disposition', `attachment; filename="${filename}"`)
-      .send(buffer);
+  async bordereau(@Param('orderId') orderId: string) {
+    const { filename, buffer, contentType } =
+      await this.crmDeliveryService.downloadYalidineBordereau(orderId);
+    return new StreamableFile(buffer, {
+      type: contentType,
+      disposition: `attachment; filename="${filename}"`,
+    });
   }
 
   @Post('yalidine/:orderId')

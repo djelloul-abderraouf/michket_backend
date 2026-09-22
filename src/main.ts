@@ -91,6 +91,7 @@ async function bootstrap() {
     exposedHeaders: [
       'X-Session-Id',
       'X-Request-Id',
+      'Content-Disposition',
     ],
   });
 

@@ -5,6 +5,7 @@ import {
   Logger,
   NotFoundException,
   ServiceUnavailableException,
+  forwardRef,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { desc, eq } from 'drizzle-orm';
@@ -14,7 +15,6 @@ import * as schema from '../database/schema';
 import {
   orderItems,
   orders,
-  orderStatusHistory,
   shipments,
 } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
@@ -23,7 +23,6 @@ import { centsToDzd } from '../crm-base/crm-status';
 import { splitOrderName } from '../crm-base/order-name';
 import { DeliveryService } from '../delivery/delivery.service';
 import { CrmOrdersService } from '../crm-orders/crm-orders.service';
-import { buildBordereauPdf, type BordereauData } from './bordereau-pdf';
 
 const YALIDINE_BASE = 'https://api.yalidine.app/v1';
 
@@ -40,6 +39,7 @@ export class CrmDeliveryService extends CrmBaseService {
     db: NodePgDatabase<typeof schema>,
     private readonly configService: ConfigService,
     private readonly deliveryService: DeliveryService,
+    @Inject(forwardRef(() => CrmOrdersService))
     private readonly crmOrdersService: CrmOrdersService,
   ) {
     super(db);
@@ -69,6 +69,7 @@ export class CrmDeliveryService extends CrmBaseService {
       .limit(1);
 
     if (existing?.trackingNumber) {
+      await this.correctYalidineCodIfPossible(existing.trackingNumber, order);
       return this.crmOrdersService.findById(order.id);
     }
 
@@ -84,10 +85,16 @@ export class CrmDeliveryService extends CrmBaseService {
       order.wilayaCode,
       order.commune,
     );
-    const fromWilayaCode = this.configService.get<number>('delivery.fromWilaya') || 16;
+    const fromWilayaCode =
+      this.configService.get<number>('DELIVERY_FROM_WILAYA') ||
+      this.configService.get<number>('delivery.fromWilaya') ||
+      16;
     const fromWilayaName = this.deliveryService.getWilayaName(fromWilayaCode);
     const isStopdesk = order.deliveryType === 'office';
-    const price = centsToDzd(order.totalCents);
+    // Yalidine `price` is COD for the products only. It then adds its own
+    // wilaya delivery fee unless freeshipping is true. Sending our total
+    // (already including livraison) with freeshipping=false billed shipping twice.
+    const price = this.parcelProductPrice(order);
     const productList =
       items.length > 0
         ? items.map((item) => `${item.quantity}x ${item.productName}`).join(', ')
@@ -106,7 +113,8 @@ export class CrmDeliveryService extends CrmBaseService {
         to_wilaya_name: order.wilayaName,
         product_list: productList,
         price,
-        freeshipping: order.deliveryFeeCents === 0,
+        declared_value: price,
+        freeshipping: false,
         is_stopdesk: isStopdesk,
         stopdesk_id: isStopdesk && order.deliveryOfficeId
           ? Number(order.deliveryOfficeId) || undefined
@@ -151,26 +159,6 @@ export class CrmDeliveryService extends CrmBaseService {
         orderId: order.id,
         ...shipmentValues,
       });
-    }
-
-    if (order.status === 'confirmed' || order.status === 'processing') {
-      await this.db.insert(orderStatusHistory).values({
-        orderId: order.id,
-        fromStatus: order.status,
-        toStatus: 'shipped',
-        changedByUserId: user?.id,
-        reason: `Colis Yalidine ${tracking}`,
-        createdAt: new Date(),
-      });
-
-      await this.db
-        .update(orders)
-        .set({
-          status: 'shipped',
-          shippedAt: order.shippedAt || new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(orders.id, order.id));
     }
 
     return this.crmOrdersService.findById(order.id);
@@ -226,37 +214,44 @@ export class CrmDeliveryService extends CrmBaseService {
     };
   }
 
-  async getYalidineLabelUrl(orderId: string) {
-    const [shipment] = await this.db
+  async getYalidineLabelUrl(orderId: string, options?: { createIfMissing?: boolean }) {
+    const createIfMissing = options?.createIfMissing !== false;
+    let [shipment] = await this.db
       .select()
       .from(shipments)
       .where(eq(shipments.orderId, orderId))
       .limit(1);
 
-    const metadata = (shipment?.metadata || {}) as Record<string, unknown>;
-    const stored = this.extractLabelUrl(metadata);
-    if (stored) {
-      return { url: stored, tracking: shipment?.trackingNumber || null };
+    if (!shipment?.trackingNumber && createIfMissing) {
+      await this.createYalidineParcel(orderId);
+      [shipment] = await this.db
+        .select()
+        .from(shipments)
+        .where(eq(shipments.orderId, orderId))
+        .limit(1);
     }
 
     if (!shipment?.trackingNumber) {
-      throw new BadRequestException('Creez d abord le colis Yalidine');
+      throw new BadRequestException(
+        'Cette commande n a pas encore de colis Yalidine',
+      );
     }
 
-    const parcel = await this.yalidineRequest(
-      'GET',
-      `/parcels/${encodeURIComponent(shipment.trackingNumber)}`,
-    );
-    const first = Array.isArray(parcel?.data) ? parcel.data[0] : parcel;
-    const url = this.extractLabelUrl(first);
+    const parcel = await this.fetchParcelByTracking(shipment.trackingNumber);
+    const url =
+      this.extractLabelUrl(parcel) ||
+      this.extractLabelUrl(shipment.metadata);
     if (!url) {
-      throw new NotFoundException('Yalidine n a pas renvoye d etiquette pour ce colis');
+      throw new NotFoundException(
+        'Yalidine n a pas renvoye de bordereau pour ce colis',
+      );
     }
 
+    const metadata = (shipment.metadata || {}) as Record<string, unknown>;
     await this.db
       .update(shipments)
       .set({
-        metadata: { ...(metadata || {}), ...first, label: url },
+        metadata: { ...metadata, ...(parcel || {}), label: url },
         syncedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -265,77 +260,32 @@ export class CrmDeliveryService extends CrmBaseService {
     return { url, tracking: shipment.trackingNumber };
   }
 
-  async buildBordereau(orderId: string) {
-    const [order] = await this.db
-      .select()
-      .from(orders)
-      .where(eq(orders.id, orderId))
-      .limit(1);
+  async downloadYalidineBordereau(orderId: string) {
+    const { url, tracking } = await this.getYalidineLabelUrl(orderId, {
+      createIfMissing: true,
+    });
 
-    if (!order) {
-      throw new NotFoundException('Commande introuvable');
-    }
-
-    if (order.status === 'pending') {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 MichketCRM',
+        Accept: 'text/html,application/pdf,application/octet-stream,*/*',
+      },
+    });
+    if (!response.ok) {
       throw new BadRequestException(
-        'Le bordereau est disponible apres confirmation de la commande',
+        'Impossible de recuperer le bordereau officiel Yalidine',
       );
     }
 
-    const items = await this.db
-      .select({
-        productName: orderItems.productName,
-        quantity: orderItems.quantity,
-        unitPriceCents: orderItems.unitPriceCents,
-        totalPriceCents: orderItems.totalPriceCents,
-        variantName: orderItems.variantName,
-        colorName: orderItems.colorName,
-      })
-      .from(orderItems)
-      .where(eq(orderItems.orderId, order.id));
-
-    const [shipment] = await this.db
-      .select()
-      .from(shipments)
-      .where(eq(shipments.orderId, order.id))
-      .limit(1);
-
-    const payload: BordereauData = {
-      reference: order.reference,
-      createdAt: order.createdAt instanceof Date
-        ? order.createdAt.toISOString()
-        : String(order.createdAt),
-      clientName: splitOrderName(order.fullName).clientName,
-      phone: order.phone,
-      email: order.email,
-      addressLine1: order.addressLine1,
-      addressLine2: order.addressLine2,
-      commune: order.commune,
-      wilaya: order.wilayaName,
-      deliveryType: order.deliveryType,
-      deliveryOfficeName: order.deliveryOfficeName,
-      paymentMethod: order.paymentMethod,
-      paymentStatus: order.paymentStatus,
-      items: items.map((item) => ({
-        productName: item.productName,
-        quantity: item.quantity,
-        unitPrice: centsToDzd(item.unitPriceCents),
-        lineTotal: centsToDzd(item.totalPriceCents),
-        variantName: item.variantName,
-        colorName: item.colorName,
-      })),
-      subtotal: centsToDzd(order.subtotalCents),
-      deliveryFee: centsToDzd(order.deliveryFeeCents),
-      discount: centsToDzd(order.discountCents),
-      total: centsToDzd(order.totalCents),
-      notes: order.notes,
-      trackingNumber: shipment?.trackingNumber,
-      carrier: shipment?.provider,
-    };
+    const contentType =
+      response.headers.get('content-type') || 'text/html; charset=utf-8';
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const extension = contentType.toLowerCase().includes('pdf') ? 'pdf' : 'html';
 
     return {
-      filename: `bordereau-${order.reference}.pdf`,
-      buffer: buildBordereauPdf(payload),
+      filename: `bordereau-yalidine-${tracking}.${extension}`,
+      contentType,
+      buffer,
     };
   }
 
@@ -348,14 +298,75 @@ export class CrmDeliveryService extends CrmBaseService {
   }
 
   private credentials() {
-    const apiId = this.configService.get<string>('delivery.yalidineId');
-    const apiToken = this.configService.get<string>('delivery.yalidineToken');
+    const apiId = (
+      this.configService.get<string>('YALIDINE_API_ID') ||
+      this.configService.get<string>('delivery.yalidineId') ||
+      ''
+    ).trim();
+    const apiToken = (
+      this.configService.get<string>('YALIDINE_API_TOKEN') ||
+      this.configService.get<string>('delivery.yalidineToken') ||
+      ''
+    ).trim();
     if (!apiId || !apiToken) {
       throw new ServiceUnavailableException(
         'Yalidine n est pas configure (YALIDINE_API_ID / YALIDINE_API_TOKEN)',
       );
     }
     return { apiId, apiToken };
+  }
+
+  private parcelProductPrice(order: typeof orders.$inferSelect) {
+    return Math.max(
+      0,
+      centsToDzd(order.subtotalCents) - centsToDzd(order.discountCents),
+    );
+  }
+
+  private async correctYalidineCodIfPossible(
+    tracking: string,
+    order: typeof orders.$inferSelect,
+  ) {
+    const price = this.parcelProductPrice(order);
+    try {
+      await this.yalidineRequest(
+        'PATCH',
+        `/parcels/${encodeURIComponent(tracking)}`,
+        { price, freeshipping: false, declared_value: price },
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Could not update Yalidine COD for ${tracking}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  private async fetchParcelByTracking(tracking: string) {
+    const encoded = encodeURIComponent(tracking);
+    const paths = [
+      `/parcels/?tracking=${encoded}&fields=tracking,label,labels,last_status`,
+      `/parcels/${encoded}`,
+    ];
+
+    for (const path of paths) {
+      try {
+        const payload = await this.yalidineRequest('GET', path);
+        const first = Array.isArray(payload?.data) ? payload.data[0] : payload;
+        if (first && (first.tracking || first.label || first.labels)) {
+          return first;
+        }
+      } catch (error) {
+        this.logger.warn(
+          `Yalidine parcel lookup failed (${path}): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    return null;
   }
 
   private unwrapParcelResult(result: any, reference: string) {
@@ -375,13 +386,17 @@ export class CrmDeliveryService extends CrmBaseService {
     if (!payload || typeof payload !== 'object') {
       return null;
     }
-    const value =
-      payload.label ||
-      payload.label_url ||
-      payload.labelUrl ||
-      payload.labels?.pdf ||
-      payload.data?.label;
-    return typeof value === 'string' && value.startsWith('http') ? value : null;
+    const candidates = [
+      payload.label,
+      payload.label_url,
+      payload.labelUrl,
+      typeof payload.labels === 'string' ? payload.labels : payload.labels?.pdf,
+      payload.data?.label,
+    ];
+    const value = candidates.find(
+      (item) => typeof item === 'string' && item.startsWith('http'),
+    );
+    return value || null;
   }
 
   private async resolveCommuneName(wilayaCode: number, commune: string) {
@@ -412,7 +427,11 @@ export class CrmDeliveryService extends CrmBaseService {
     }
   }
 
-  private async yalidineRequest(method: 'GET' | 'POST', path: string, body?: unknown) {
+  private async yalidineRequest(
+    method: 'GET' | 'POST' | 'PATCH',
+    path: string,
+    body?: unknown,
+  ) {
     const { apiId, apiToken } = this.credentials();
     const response = await fetch(`${YALIDINE_BASE}${path}`, {
       method,

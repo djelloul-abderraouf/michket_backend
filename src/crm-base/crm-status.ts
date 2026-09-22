@@ -14,7 +14,8 @@ export type CrmOrderStatus =
   | 'en_preparation'
   | 'en_livraison'
   | 'livre'
-  | 'retour_echec';
+  | 'retour_echec'
+  | 'annulee';
 
 const CRM_TO_DB: Record<CrmOrderStatus, DbOrderStatus> = {
   pas_confirme: 'pending',
@@ -23,7 +24,8 @@ const CRM_TO_DB: Record<CrmOrderStatus, DbOrderStatus> = {
   en_preparation: 'processing',
   en_livraison: 'shipped',
   livre: 'delivered',
-  retour_echec: 'cancelled',
+  retour_echec: 'refunded',
+  annulee: 'cancelled',
 };
 
 export function isCrmOrderStatus(value: string): value is CrmOrderStatus {
@@ -54,6 +56,7 @@ export function toCrmOrderStatus(
     case 'delivered':
       return 'livre';
     case 'cancelled':
+      return 'annulee';
     case 'refunded':
       return 'retour_echec';
     default:

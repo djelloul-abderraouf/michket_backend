@@ -2,7 +2,9 @@ import {
   BadRequestException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
+  forwardRef,
 } from '@nestjs/common';
 import {
   and,
@@ -38,6 +40,7 @@ import {
 } from '../crm-base/crm-status';
 import { joinOrderName, splitOrderName } from '../crm-base/order-name';
 import { CreateCrmOrderDto } from './dto/crm-orders.dto';
+import { CrmDeliveryService } from '../crm-delivery/crm-delivery.service';
 
 type CrmUserContext = {
   id: string;
@@ -48,9 +51,13 @@ type CrmUserContext = {
 
 @Injectable()
 export class CrmOrdersService extends CrmBaseService {
+  private readonly logger = new Logger(CrmOrdersService.name);
+
   constructor(
     @Inject(DATABASE_CONNECTION)
     db: NodePgDatabase<typeof schema>,
+    @Inject(forwardRef(() => CrmDeliveryService))
+    private readonly crmDeliveryService: CrmDeliveryService,
   ) {
     super(db);
   }
@@ -181,7 +188,7 @@ export class CrmOrdersService extends CrmBaseService {
       updateData.deliveredAt = new Date();
     }
 
-    if (dbStatus === 'cancelled' && !order.cancelledAt) {
+    if ((dbStatus === 'cancelled' || dbStatus === 'refunded') && !order.cancelledAt) {
       updateData.cancelledAt = new Date();
       updateData.cancelReason = note ?? order.cancelReason;
     }
@@ -202,6 +209,18 @@ export class CrmOrdersService extends CrmBaseService {
       .set(updateData)
       .where(eq(orders.id, id))
       .returning();
+
+    if (dbStatus === 'confirmed') {
+      try {
+        return await this.crmDeliveryService.createYalidineParcel(id, user);
+      } catch (error) {
+        this.logger.warn(
+          `Yalidine auto-create failed for order ${id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
 
     const [mapped] = await this.attachOrderDetails([updatedOrder]);
     return mapped;
