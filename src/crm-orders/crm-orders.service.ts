@@ -36,6 +36,7 @@ import {
   toCrmOrderStatus,
   toDbOrderStatus,
 } from '../crm-base/crm-status';
+import { joinOrderName, splitOrderName } from '../crm-base/order-name';
 import { CreateCrmOrderDto } from './dto/crm-orders.dto';
 
 type CrmUserContext = {
@@ -81,8 +82,7 @@ export class CrmOrdersService extends CrmBaseService {
       conditions.push(
         or(
           ilike(orders.reference, term),
-          ilike(orders.firstName, term),
-          ilike(orders.lastName, term),
+          ilike(orders.fullName, term),
           ilike(orders.phone, term),
         ),
       );
@@ -283,8 +283,7 @@ export class CrmOrdersService extends CrmBaseService {
         deliveryFeeCents,
         discountCents,
         totalCents,
-        firstName,
-        lastName: lastName || firstName,
+        fullName: joinOrderName(firstName, lastName || firstName),
         phone,
         email,
         addressLine1: dto.addressLine1?.trim() || 'Adresse a confirmer',
@@ -404,6 +403,7 @@ export class CrmOrdersService extends CrmBaseService {
     );
 
     return orderRows.map((order) => {
+      const names = splitOrderName(order.fullName);
       const items = itemRows.filter((item) => item.orderId === order.id);
       const history = historyRows.filter((item) => item.orderId === order.id);
       const jobs = jobRows.filter((item) => item.orderId === order.id);
@@ -415,9 +415,9 @@ export class CrmOrdersService extends CrmBaseService {
         id: order.id,
         reference: order.reference,
         source: 'directe' as const,
-        clientName: `${order.firstName} ${order.lastName}`.trim(),
-        firstName: order.firstName,
-        lastName: order.lastName,
+        clientName: names.clientName,
+        firstName: names.firstName,
+        lastName: names.lastName,
         phone: order.phone,
         email: order.email,
         wilaya: order.wilayaName,
@@ -529,7 +529,7 @@ export class CrmOrdersService extends CrmBaseService {
       id: this.newId(),
       orderId: order.id,
       orderRef: order.reference,
-      clientName: `${order.firstName} ${order.lastName}`.trim(),
+      clientName: splitOrderName(order.fullName).clientName,
       productSummary,
       status: 'en_attente',
     });

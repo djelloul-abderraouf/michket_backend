@@ -20,6 +20,7 @@ import {
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { CrmBaseService } from '../crm-base/crm-base.service';
 import { centsToDzd } from '../crm-base/crm-status';
+import { splitOrderName } from '../crm-base/order-name';
 import { DeliveryService } from '../delivery/delivery.service';
 import { CrmOrdersService } from '../crm-orders/crm-orders.service';
 import { buildBordereauPdf, type BordereauData } from './bordereau-pdf';
@@ -92,12 +93,13 @@ export class CrmDeliveryService extends CrmBaseService {
         ? items.map((item) => `${item.quantity}x ${item.productName}`).join(', ')
         : 'Commande Michket';
 
+    const names = splitOrderName(order.fullName);
     const payload = [
       {
         order_id: order.reference,
         from_wilaya_name: fromWilayaName,
-        firstname: order.firstName,
-        familyname: order.lastName,
+        firstname: names.firstName,
+        familyname: names.lastName || names.firstName,
         contact_phone: order.phone.replace(/\s+/g, ''),
         address: [order.addressLine1, order.addressLine2].filter(Boolean).join(', ') || order.commune,
         to_commune_name: communeName,
@@ -303,7 +305,7 @@ export class CrmDeliveryService extends CrmBaseService {
       createdAt: order.createdAt instanceof Date
         ? order.createdAt.toISOString()
         : String(order.createdAt),
-      clientName: `${order.firstName} ${order.lastName}`.trim(),
+      clientName: splitOrderName(order.fullName).clientName,
       phone: order.phone,
       email: order.email,
       addressLine1: order.addressLine1,

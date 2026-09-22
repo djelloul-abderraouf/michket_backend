@@ -23,6 +23,7 @@ import {
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { CrmBaseService } from '../crm-base/crm-base.service';
 import { centsToDzd, toCrmOrderStatus } from '../crm-base/crm-status';
+import { splitOrderName } from '../crm-base/order-name';
 
 @Injectable()
 export class CrmDashboardService extends CrmBaseService {
@@ -318,7 +319,7 @@ export class CrmDashboardService extends CrmBaseService {
         reference: order.reference,
         status: toCrmOrderStatus(order.status),
         total: centsToDzd(order.totalCents),
-        clientName: `${order.firstName} ${order.lastName}`.trim(),
+        clientName: splitOrderName(order.fullName).clientName,
         phone: order.phone,
         wilaya: order.wilayaName,
         commune: order.commune,

@@ -786,8 +786,7 @@ export class OrdersService {
         totalCents,
         currency: 'DZD',
 
-        firstName: orderData.firstName.trim(),
-        lastName: orderData.lastName.trim(),
+        fullName: `${orderData.firstName.trim()} ${orderData.lastName.trim()}`.trim(),
         phone: orderData.phone.trim(),
         email: orderData.email?.trim() || null,
 

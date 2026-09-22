@@ -64,8 +64,7 @@ export const orders = pgTable(
     currency: text('currency').notNull().default('DZD'),
 
     // Customer + shipping snapshot.
-    firstName: text('first_name').notNull(),
-    lastName: text('last_name').notNull(),
+    fullName: text('full_name').notNull(),
     phone: text('phone').notNull(),
     email: text('email'),
 
