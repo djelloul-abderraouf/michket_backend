@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Inject,
   NotFoundException,
@@ -426,10 +427,82 @@ export class ProductsService {
         id: categories.id,
         name: categories.name,
         slug: categories.slug,
+        description: categories.description,
+        imageUrl: categories.imageUrl,
+        imageStoragePath: categories.imageStoragePath,
+        href: categories.href,
+        parentId: categories.parentId,
         isActive: categories.isActive,
+        sortOrder: categories.sortOrder,
+        metaTitle: categories.metaTitle,
+        metaDescription: categories.metaDescription,
+        pageTitle: categories.pageTitle,
+        productsTitle: categories.productsTitle,
+        filterLabel: categories.filterLabel,
       })
       .from(categories)
       .orderBy(asc(categories.sortOrder), asc(categories.name));
+  }
+
+  async createCategoryForCrm(data: {
+    name: string;
+    slug?: string;
+    description?: string;
+    imageUrl?: string;
+    imageStoragePath?: string;
+    href?: string;
+    parentId?: string;
+    isActive?: boolean;
+    sortOrder?: number;
+    metaTitle?: string;
+    metaDescription?: string;
+    pageTitle?: string;
+    productsTitle?: string;
+    filterLabel?: string;
+  }) {
+    const name = data.name.trim();
+    if (!name) {
+      throw new BadRequestException('Nom de categorie requis');
+    }
+
+    const [existing] = await this.db
+      .select()
+      .from(categories)
+      .where(sql`lower(${categories.name}) = ${name.toLowerCase()}`)
+      .limit(1);
+
+    if (existing) {
+      return this.mapCrmCategory(existing);
+    }
+
+    if (data.parentId) {
+      await this.assertCategory(data.parentId);
+    }
+
+    const slug = await this.uniqueCategorySlug(name, data.slug);
+    const href = data.href?.trim() || `/${slug}`;
+
+    const [created] = await this.db
+      .insert(categories)
+      .values({
+        name,
+        slug,
+        description: data.description?.trim() || null,
+        imageUrl: data.imageUrl?.trim() || null,
+        imageStoragePath: data.imageStoragePath?.trim() || null,
+        href,
+        parentId: data.parentId || null,
+        isActive: data.isActive ?? true,
+        sortOrder: data.sortOrder ?? 0,
+        metaTitle: data.metaTitle?.trim() || null,
+        metaDescription: data.metaDescription?.trim() || null,
+        pageTitle: data.pageTitle?.trim() || null,
+        productsTitle: data.productsTitle?.trim() || null,
+        filterLabel: data.filterLabel?.trim() || null,
+      })
+      .returning();
+
+    return this.mapCrmCategory(created);
   }
 
   async createForCrm(data: {
@@ -439,6 +512,7 @@ export class ProductsService {
     shortDescription?: string;
     description?: string;
     photoUrl?: string;
+    storagePath?: string;
     isActive?: boolean;
     isPersonalizable?: boolean;
   }) {
@@ -462,6 +536,7 @@ export class ProductsService {
       await this.db.insert(productImages).values({
         productId: created.id,
         url: data.photoUrl.trim(),
+        storagePath: data.storagePath?.trim() || null,
         altText: created.name,
         isPrimary: true,
         sortOrder: 0,
@@ -486,6 +561,7 @@ export class ProductsService {
       shortDescription?: string;
       description?: string;
       photoUrl?: string;
+      storagePath?: string;
       isActive?: boolean;
       isPersonalizable?: boolean;
     },
@@ -549,12 +625,17 @@ export class ProductsService {
       if (url && primary) {
         await this.db
           .update(productImages)
-          .set({ url, altText: updated.name })
+          .set({
+            url,
+            storagePath: data.storagePath?.trim() || undefined,
+            altText: updated.name,
+          })
           .where(eq(productImages.id, primary.id));
       } else if (url) {
         await this.db.insert(productImages).values({
           productId: id,
           url,
+          storagePath: data.storagePath?.trim() || null,
           altText: updated.name,
           isPrimary: true,
           sortOrder: 0,
@@ -588,6 +669,57 @@ export class ProductsService {
 
     if (!category) {
       throw new NotFoundException('Categorie introuvable');
+    }
+  }
+
+  private mapCrmCategory(category: typeof categories.$inferSelect) {
+    return {
+      id: category.id,
+      name: category.name,
+      slug: category.slug,
+      description: category.description,
+      imageUrl: category.imageUrl,
+      imageStoragePath: category.imageStoragePath,
+      href: category.href,
+      parentId: category.parentId,
+      isActive: category.isActive,
+      sortOrder: category.sortOrder,
+      metaTitle: category.metaTitle,
+      metaDescription: category.metaDescription,
+      pageTitle: category.pageTitle,
+      productsTitle: category.productsTitle,
+      filterLabel: category.filterLabel,
+    };
+  }
+
+  private cleanSlug(value: string, fallback = 'categorie') {
+    return (
+      value
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 80) || fallback
+    );
+  }
+
+  private async uniqueCategorySlug(name: string, preferred?: string) {
+    const base = this.cleanSlug(preferred || name);
+    let slug = base;
+    let suffix = 2;
+
+    while (true) {
+      const [found] = await this.db
+        .select({ id: categories.id })
+        .from(categories)
+        .where(eq(categories.slug, slug))
+        .limit(1);
+      if (!found) {
+        return slug;
+      }
+      slug = `${base}-${suffix}`;
+      suffix += 1;
     }
   }
 

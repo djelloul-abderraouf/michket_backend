@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -6,10 +7,13 @@ import {
   Param,
   Post,
   Put,
+  Req,
   UseGuards,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import type { FastifyRequest } from 'fastify';
 import {
   ApiBearerAuth,
   ApiOperation,
@@ -19,10 +23,13 @@ import {
 } from '@nestjs/swagger';
 import {
   IsBoolean,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
+  IsUUID,
+  MaxLength,
   Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -31,7 +38,15 @@ import { CrmAuthGuard } from '../auth/guards/crm-auth.guard';
 import { CrmRolesGuard } from '../auth/guards/crm-roles.guard';
 import { CrmRoles } from '../common/decorators/roles.decorator';
 import { ProductsService } from '../products/products.service';
+import { MediaService } from '../media/media.service';
 import { centsToDzd } from '../crm-base/crm-status';
+
+const IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+  'image/avif': 'avif',
+};
 
 class ToggleProductDto {
   @ApiProperty()
@@ -70,6 +85,11 @@ class CreateCrmProductDto {
   @IsOptional()
   @IsString()
   photoUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  storagePath?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -117,6 +137,11 @@ class UpdateCrmProductDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @IsString()
+  storagePath?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsBoolean()
   isActive?: boolean;
 
@@ -124,6 +149,85 @@ class UpdateCrmProductDto {
   @IsOptional()
   @IsBoolean()
   isPersonalizable?: boolean;
+}
+
+class CreateCrmCategoryDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(150)
+  name!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(180)
+  slug?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  imageUrl?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  imageStoragePath?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  href?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsUUID()
+  parentId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  metaTitle?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  metaDescription?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  pageTitle?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  productsTitle?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  filterLabel?: string;
 }
 
 function mapCrmProduct(product: {
@@ -170,7 +274,10 @@ function mapCrmProduct(product: {
 @UseGuards(CrmAuthGuard, CrmRolesGuard)
 @ApiBearerAuth()
 export class CrmCatalogController {
-  constructor(private readonly productsService: ProductsService) {}
+  constructor(
+    private readonly productsService: ProductsService,
+    private readonly mediaService: MediaService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'List catalog products for CRM' })
@@ -193,6 +300,58 @@ export class CrmCatalogController {
     return this.productsService.listCategoriesForCrm();
   }
 
+  @Post('categories')
+  @ApiOperation({ summary: 'Create a product category using Supabase category attributes' })
+  @CrmRoles('admin', 'atelier_design')
+  async createCategory(@Body() dto: CreateCrmCategoryDto) {
+    return this.productsService.createCategoryForCrm(dto);
+  }
+
+  @Post('categories/images')
+  @ApiOperation({ summary: 'Upload a category image to the Supabase product-images bucket' })
+  @CrmRoles('admin', 'atelier_design')
+  async uploadCategoryImage(@Req() req: FastifyRequest) {
+    return this.uploadCatalogImage(req, 'categories');
+  }
+
+  @Post('images')
+  @ApiOperation({ summary: 'Upload a product image to the Supabase bucket' })
+  @CrmRoles('admin', 'atelier_design')
+  async uploadImage(@Req() req: FastifyRequest) {
+    return this.uploadCatalogImage(req, 'products');
+  }
+
+  private async uploadCatalogImage(
+    req: FastifyRequest,
+    folder: 'products' | 'categories',
+  ) {
+    const file = await req.file();
+    if (!file) {
+      throw new BadRequestException('Image fichier requis');
+    }
+
+    const mimetype = file.mimetype.split(';', 1)[0].trim().toLowerCase();
+    const extension = IMAGE_EXTENSION_BY_MIME[mimetype];
+    if (!extension) {
+      throw new BadRequestException('Formats acceptes: JPEG, PNG, WebP, AVIF');
+    }
+
+    const buffer = await file.toBuffer();
+    if (file.file.truncated) {
+      throw new BadRequestException('Image trop lourde (10 Mo max)');
+    }
+
+    const now = new Date();
+    const path = [
+      folder,
+      String(now.getUTCFullYear()),
+      String(now.getUTCMonth() + 1).padStart(2, '0'),
+      `${randomUUID()}.${extension}`,
+    ].join('/');
+
+    return this.mediaService.upload(buffer, path, mimetype);
+  }
+
   @Post()
   @ApiOperation({ summary: 'Create a catalog product' })
   @CrmRoles('admin', 'atelier_design')
@@ -204,6 +363,7 @@ export class CrmCatalogController {
       shortDescription: dto.shortDescription,
       description: dto.description,
       photoUrl: dto.photoUrl,
+      storagePath: dto.storagePath,
       isActive: dto.isActive,
       isPersonalizable: dto.isPersonalizable,
     });
@@ -236,6 +396,7 @@ export class CrmCatalogController {
       shortDescription: dto.shortDescription,
       description: dto.description,
       photoUrl: dto.photoUrl,
+      storagePath: dto.storagePath,
       isActive: dto.isActive,
       isPersonalizable: dto.isPersonalizable,
     });

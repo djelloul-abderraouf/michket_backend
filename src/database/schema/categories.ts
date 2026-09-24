@@ -22,6 +22,8 @@ export const categories = pgTable(
 
     imageUrl: text('image_url'),
 
+    imageStoragePath: text('image_storage_path'),
+
     href: text('href'),
 
     // Self-reference: a category can optionally belong to another category.
@@ -37,6 +39,12 @@ export const categories = pgTable(
     metaTitle: text('meta_title'),
 
     metaDescription: text('meta_description'),
+
+    pageTitle: text('page_title'),
+
+    productsTitle: text('products_title'),
+
+    filterLabel: text('filter_label'),
 
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
