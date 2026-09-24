@@ -27,6 +27,7 @@ import {
   orderStatusHistory,
   productImages,
   products,
+  productVariants,
   shipments,
   users,
 } from '../database/schema';
@@ -39,8 +40,11 @@ import {
   toDbOrderStatus,
 } from '../crm-base/crm-status';
 import { joinOrderName, splitOrderName } from '../crm-base/order-name';
+import { personalizationText, toPersonalizationJson } from '../crm-base/personalization';
+import { normalizePhone, phoneKey } from '../crm-base/phone';
 import { CreateCrmOrderDto } from './dto/crm-orders.dto';
 import { CrmDeliveryService } from '../crm-delivery/crm-delivery.service';
+import { extractYalidineStatus } from '../crm-delivery/yalidine-status';
 
 type CrmUserContext = {
   id: string;
@@ -65,6 +69,7 @@ export class CrmOrdersService extends CrmBaseService {
   async findAll(filters: {
     status?: string;
     wilaya?: string;
+    source?: string;
     search?: string;
     page?: number;
     limit?: number;
@@ -82,6 +87,19 @@ export class CrmOrdersService extends CrmBaseService {
 
     if (filters.wilaya && filters.wilaya !== 'all') {
       conditions.push(eq(orders.wilayaName, filters.wilaya));
+    }
+
+    if (
+      filters.source &&
+      filters.source !== 'all' &&
+      ['ecom', 'whatsapp', 'facebook', 'instagram'].includes(filters.source)
+    ) {
+      conditions.push(
+        eq(
+          orders.source,
+          filters.source as 'ecom' | 'whatsapp' | 'facebook' | 'instagram',
+        ),
+      );
     }
 
     if (filters.search?.trim()) {
@@ -226,10 +244,48 @@ export class CrmOrdersService extends CrmBaseService {
     return mapped;
   }
 
+  async lookupClientByPhone(phone: string) {
+    const key = phoneKey(phone);
+    if (key.length < 8) {
+      return {
+        exists: false,
+        previousOrderCount: 0,
+        contact: null,
+      };
+    }
+
+    const [contactRows, orderRows] = await Promise.all([
+      this.db.select().from(crmContacts),
+      this.db.select({ phone: orders.phone }).from(orders),
+    ]);
+
+    const contact =
+      contactRows.find((row) => phoneKey(row.phone) === key) ?? null;
+    const previousOrderCount = orderRows.filter(
+      (row) => phoneKey(row.phone) === key,
+    ).length;
+
+    return {
+      exists: Boolean(contact) || previousOrderCount > 0,
+      previousOrderCount,
+      contact: contact
+        ? {
+            id: contact.id,
+            firstName: contact.firstName,
+            lastName: contact.lastName,
+            phone: contact.phone,
+            email: contact.email,
+            wilaya: contact.wilaya,
+            type: contact.type,
+          }
+        : null,
+    };
+  }
+
   async create(dto: CreateCrmOrderDto, user?: CrmUserContext) {
     let firstName = dto.firstName.trim();
     let lastName = (dto.lastName ?? '').trim();
-    let phone = dto.phone.trim();
+    let phone = normalizePhone(dto.phone);
     let email = dto.email?.trim() || null;
     let wilayaName = dto.wilayaName?.trim() || 'Alger';
     let wilayaCode =
@@ -237,23 +293,52 @@ export class CrmOrdersService extends CrmBaseService {
         ? dto.wilayaCode
         : 16;
     const quantity = dto.quantity && dto.quantity > 0 ? dto.quantity : 1;
+    const deliveryType = dto.deliveryType === 'office' ? 'office' : 'home';
+    const addressLine1 = dto.addressLine1?.trim() || '';
 
-    if (dto.contactId) {
-      const [contact] = await this.db
-        .select()
-        .from(crmContacts)
-        .where(eq(crmContacts.id, dto.contactId))
-        .limit(1);
+    if (deliveryType === 'home' && !addressLine1) {
+      throw new BadRequestException(
+        'Adresse exacte obligatoire pour une livraison a domicile',
+      );
+    }
 
-      if (!contact) {
-        throw new BadRequestException('Contact introuvable');
-      }
+    let contact =
+      (dto.contactId
+        ? (
+            await this.db
+              .select()
+              .from(crmContacts)
+              .where(eq(crmContacts.id, dto.contactId))
+              .limit(1)
+          )[0]
+        : undefined) ??
+      (await this.findContactByPhone(phone));
 
+    if (dto.contactId && !contact) {
+      throw new BadRequestException('Contact introuvable');
+    }
+
+    if (contact) {
       firstName = contact.firstName;
       lastName = contact.lastName;
       phone = contact.phone;
       email = contact.email || email;
       wilayaName = contact.wilaya || wilayaName;
+    } else {
+      const clientType = dto.clientType || 'particulier';
+      const [createdContact] = await this.db
+        .insert(crmContacts)
+        .values({
+          id: this.newId(),
+          firstName,
+          lastName: lastName || '-',
+          phone,
+          email,
+          wilaya: wilayaName,
+          type: clientType,
+        })
+        .returning();
+      contact = createdContact;
     }
 
     let productName = 'Commande CRM';
@@ -261,6 +346,11 @@ export class CrmOrdersService extends CrmBaseService {
     let productImageUrl: string | null = null;
     let unitPriceCents = 0;
     let productId: string | null = dto.productId ?? null;
+    let variantId: string | null = null;
+    let variantName: string | null = null;
+    let variantSku: string | null = null;
+    let colorName = dto.colorName?.trim() || null;
+    let colorHex: string | null = null;
 
     if (dto.productId) {
       const [product] = await this.db
@@ -286,6 +376,32 @@ export class CrmOrdersService extends CrmBaseService {
         .limit(1);
 
       productImageUrl = image?.url ?? null;
+
+      if (dto.variantId) {
+        const [variant] = await this.db
+          .select()
+          .from(productVariants)
+          .where(
+            and(
+              eq(productVariants.id, dto.variantId),
+              eq(productVariants.productId, product.id),
+            ),
+          )
+          .limit(1);
+
+        if (!variant) {
+          throw new BadRequestException('Couleur / variante introuvable');
+        }
+
+        variantId = variant.id;
+        variantName = variant.name;
+        variantSku = variant.sku;
+        colorName = variant.colorName || variant.name;
+        colorHex = variant.colorHex;
+        if (variant.priceCents !== null && variant.priceCents !== undefined) {
+          unitPriceCents = variant.priceCents;
+        }
+      }
     }
 
     const subtotalCents = unitPriceCents * quantity;
@@ -297,6 +413,7 @@ export class CrmOrdersService extends CrmBaseService {
       .insert(orders)
       .values({
         reference: this.generateReference(),
+        source: dto.source,
         status: 'pending',
         subtotalCents,
         deliveryFeeCents,
@@ -305,11 +422,22 @@ export class CrmOrdersService extends CrmBaseService {
         fullName: joinOrderName(firstName, lastName || firstName),
         phone,
         email,
-        addressLine1: dto.addressLine1?.trim() || 'Adresse a confirmer',
+        addressLine1:
+          deliveryType === 'home'
+            ? addressLine1
+            : dto.deliveryOfficeName?.trim() || addressLine1 || 'Bureau',
         wilayaCode,
         wilayaName,
         commune: dto.commune?.trim() || 'Centre',
-        deliveryType: 'home',
+        deliveryType,
+        deliveryOfficeId:
+          deliveryType === 'office'
+            ? dto.deliveryOfficeId?.trim() || null
+            : null,
+        deliveryOfficeName:
+          deliveryType === 'office'
+            ? dto.deliveryOfficeName?.trim() || null
+            : null,
         notes: dto.notes,
         paymentMethod: 'cod',
         createdAt: new Date(),
@@ -321,12 +449,18 @@ export class CrmOrdersService extends CrmBaseService {
       await this.db.insert(orderItems).values({
         orderId: newOrder.id,
         productId,
+        variantId,
         productName,
         productSlug,
         productImageUrl,
+        variantName,
+        variantSku,
+        colorName,
+        colorHex,
         quantity,
         unitPriceCents,
         totalPriceCents: unitPriceCents * quantity,
+        personalization: toPersonalizationJson(dto.personalizationText),
       });
     }
 
@@ -335,12 +469,21 @@ export class CrmOrdersService extends CrmBaseService {
       fromStatus: null,
       toStatus: 'pending',
       changedByUserId: user?.id,
-      reason: 'Commande creee depuis le CRM',
+      reason: `Commande creee depuis le CRM (${dto.source})`,
       createdAt: new Date(),
     });
 
     const [mapped] = await this.attachOrderDetails([newOrder]);
     return mapped;
+  }
+
+  private async findContactByPhone(phone: string) {
+    const key = phoneKey(phone);
+    if (!key) {
+      return undefined;
+    }
+    const contacts = await this.db.select().from(crmContacts);
+    return contacts.find((row) => phoneKey(row.phone) === key);
   }
 
   private async attachOrderDetails(
@@ -363,6 +506,7 @@ export class CrmOrdersService extends CrmBaseService {
           productSlug: orderItems.productSlug,
           variantName: orderItems.variantName,
           colorName: orderItems.colorName,
+          colorHex: orderItems.colorHex,
           quantity: orderItems.quantity,
           unitPriceCents: orderItems.unitPriceCents,
           totalPriceCents: orderItems.totalPriceCents,
@@ -421,6 +565,25 @@ export class CrmOrdersService extends CrmBaseService {
       ]),
     );
 
+    const [contactRows, phoneRows] = await Promise.all([
+      this.db.select().from(crmContacts),
+      this.db.select({ id: orders.id, phone: orders.phone }).from(orders),
+    ]);
+
+    const contactByPhone = new Map(
+      contactRows
+        .map((row) => [phoneKey(row.phone), row] as const)
+        .filter(([key]) => key.length > 0),
+    );
+    const orderCountByPhone = new Map<string, number>();
+    for (const row of phoneRows) {
+      const key = phoneKey(row.phone);
+      if (!key) {
+        continue;
+      }
+      orderCountByPhone.set(key, (orderCountByPhone.get(key) || 0) + 1);
+    }
+
     return orderRows.map((order) => {
       const names = splitOrderName(order.fullName);
       const items = itemRows.filter((item) => item.orderId === order.id);
@@ -429,16 +592,26 @@ export class CrmOrdersService extends CrmBaseService {
       const shipment = shipmentByOrder.get(order.id);
       const productionComplete =
         jobs.length > 0 && jobs.every((job) => job.status === 'termine');
+      const clientPhoneKey = phoneKey(order.phone);
+      const contact = contactByPhone.get(clientPhoneKey);
+      const previousOrderCount = Math.max(
+        0,
+        (orderCountByPhone.get(clientPhoneKey) || 1) - 1,
+      );
 
       return {
         id: order.id,
         reference: order.reference,
-        source: 'directe' as const,
+        source: order.source,
         clientName: names.clientName,
         firstName: names.firstName,
         lastName: names.lastName,
         phone: order.phone,
         email: order.email,
+        clientType: contact?.type ?? null,
+        isExistingClient: previousOrderCount > 0,
+        previousOrderCount,
+        contactId: contact?.id ?? null,
         wilaya: order.wilayaName,
         wilayaName: order.wilayaName,
         wilayaCode: order.wilayaCode,
@@ -463,10 +636,12 @@ export class CrmOrdersService extends CrmBaseService {
           productSlug: item.productSlug,
           variantName: item.variantName,
           colorName: item.colorName,
+          colorHex: item.colorHex,
           quantity: item.quantity,
           unitPrice: centsToDzd(item.unitPriceCents),
           lineTotal: centsToDzd(item.totalPriceCents),
           personalization: item.personalization,
+          personalizationText: personalizationText(item.personalization),
         })),
         total: centsToDzd(order.totalCents),
         totalCents: order.totalCents,
@@ -475,6 +650,8 @@ export class CrmOrdersService extends CrmBaseService {
         trackingNumber: shipment?.trackingNumber ?? null,
         carrier: shipment?.provider ?? null,
         carrierStatus: shipment?.status ?? null,
+        yalidineStatus: extractYalidineStatus(shipment?.metadata),
+        yalidineSyncedAt: this.toIso(shipment?.syncedAt) ?? null,
         shipmentId: shipment?.id ?? null,
         labelUrl: this.extractShipmentLabel(shipment?.metadata),
         deliveredAt: this.toIso(order.deliveredAt),

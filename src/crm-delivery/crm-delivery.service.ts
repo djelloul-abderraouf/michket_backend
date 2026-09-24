@@ -14,20 +14,35 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import * as schema from '../database/schema';
 import {
   orderItems,
+  orderStatusHistory,
   orders,
   shipments,
 } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { CrmBaseService } from '../crm-base/crm-base.service';
-import { centsToDzd } from '../crm-base/crm-status';
+import { centsToDzd, type DbOrderStatus } from '../crm-base/crm-status';
 import { splitOrderName } from '../crm-base/order-name';
+import { personalizationText } from '../crm-base/personalization';
 import { DeliveryService } from '../delivery/delivery.service';
 import { CrmOrdersService } from '../crm-orders/crm-orders.service';
+import {
+  canApplyYalidineStatus,
+  extractYalidineStatus,
+  mapYalidineLastStatus,
+} from './yalidine-status';
 
 const YALIDINE_BASE = 'https://api.yalidine.app/v1';
 
 type CrmUserContext = {
   id: string;
+};
+
+export type YalidineCenter = {
+  centerId: number;
+  name: string;
+  address: string;
+  commune: string;
+  wilaya: string;
 };
 
 @Injectable()
@@ -43,6 +58,29 @@ export class CrmDeliveryService extends CrmBaseService {
     private readonly crmOrdersService: CrmOrdersService,
   ) {
     super(db);
+  }
+
+  async listYalidineCenters(wilayaCode?: number): Promise<YalidineCenter[]> {
+    const query = wilayaCode
+      ? `/centers/?wilaya_id=${wilayaCode}&page_size=100`
+      : '/centers/?page_size=100';
+    const payload = await this.yalidineRequest('GET', query);
+    const rows: Array<Record<string, unknown>> = Array.isArray(payload?.data)
+      ? payload.data
+      : [];
+
+    return rows
+      .map((row) => {
+        const centerId = Number(row.center_id ?? row.id);
+        return {
+          centerId,
+          name: String(row.name || '').trim(),
+          address: String(row.address || '').trim(),
+          commune: String(row.commune_name || row.commune || '').trim(),
+          wilaya: String(row.wilaya_name || '').trim(),
+        };
+      })
+      .filter((row) => Number.isFinite(row.centerId) && row.centerId > 0 && row.name);
   }
 
   async createYalidineParcel(orderId: string, user?: CrmUserContext) {
@@ -77,6 +115,8 @@ export class CrmDeliveryService extends CrmBaseService {
       .select({
         productName: orderItems.productName,
         quantity: orderItems.quantity,
+        colorName: orderItems.colorName,
+        personalization: orderItems.personalization,
       })
       .from(orderItems)
       .where(eq(orderItems.orderId, order.id));
@@ -91,14 +131,28 @@ export class CrmDeliveryService extends CrmBaseService {
       16;
     const fromWilayaName = this.deliveryService.getWilayaName(fromWilayaCode);
     const isStopdesk = order.deliveryType === 'office';
-    // Yalidine `price` is COD for the products only. It then adds its own
-    // wilaya delivery fee unless freeshipping is true. Sending our total
-    // (already including livraison) with freeshipping=false billed shipping twice.
+    const stopdesk = isStopdesk ? await this.resolveStopdesk(order) : null;
+
+    if (stopdesk) {
+      await this.db
+        .update(orders)
+        .set({
+          deliveryOfficeId: String(stopdesk.centerId),
+          deliveryOfficeName: stopdesk.name || order.deliveryOfficeName,
+          updatedAt: new Date(),
+        })
+        .where(eq(orders.id, order.id));
+    }
+
     const price = this.parcelProductPrice(order);
-    const productList =
-      items.length > 0
-        ? items.map((item) => `${item.quantity}x ${item.productName}`).join(', ')
-        : 'Commande Michket';
+    const productList = this.formatProductList(items);
+    const address = isStopdesk
+      ? stopdesk?.address ||
+        stopdesk?.name ||
+        order.deliveryOfficeName ||
+        communeName
+      : [order.addressLine1, order.addressLine2].filter(Boolean).join(', ') ||
+        communeName;
 
     const names = splitOrderName(order.fullName);
     const payload = [
@@ -108,7 +162,7 @@ export class CrmDeliveryService extends CrmBaseService {
         firstname: names.firstName,
         familyname: names.lastName || names.firstName,
         contact_phone: order.phone.replace(/\s+/g, ''),
-        address: [order.addressLine1, order.addressLine2].filter(Boolean).join(', ') || order.commune,
+        address,
         to_commune_name: communeName,
         to_wilaya_name: order.wilayaName,
         product_list: productList,
@@ -116,9 +170,7 @@ export class CrmDeliveryService extends CrmBaseService {
         declared_value: price,
         freeshipping: false,
         is_stopdesk: isStopdesk,
-        stopdesk_id: isStopdesk && order.deliveryOfficeId
-          ? Number(order.deliveryOfficeId) || undefined
-          : undefined,
+        stopdesk_id: stopdesk?.centerId,
         has_exchange: false,
       },
     ];
@@ -137,14 +189,15 @@ export class CrmDeliveryService extends CrmBaseService {
       );
     }
 
+    const lastStatus = extractYalidineStatus(created) || 'Cree';
     const shipmentValues = {
       provider: 'yalidine',
       externalShipmentId: String(created.import_id || created.id || tracking),
       trackingNumber: String(tracking),
       status: 'created' as const,
-      stopDeskId: order.deliveryOfficeId,
-      stopDeskName: order.deliveryOfficeName,
-      metadata: { ...created, label: labelUrl },
+      stopDeskId: stopdesk ? String(stopdesk.centerId) : order.deliveryOfficeId,
+      stopDeskName: stopdesk?.name || order.deliveryOfficeName,
+      metadata: { ...created, last_status: lastStatus, label: labelUrl },
       syncedAt: new Date(),
       updatedAt: new Date(),
     };
@@ -161,10 +214,34 @@ export class CrmDeliveryService extends CrmBaseService {
       });
     }
 
+    await this.db.insert(orderStatusHistory).values({
+      orderId: order.id,
+      fromStatus: order.status,
+      toStatus: order.status,
+      changedByUserId: user?.id,
+      reason: `Colis Yalidine cree (${tracking}) — ${isStopdesk ? 'Bureau' : 'Domicile'}`,
+      metadata: {
+        tracking,
+        last_status: lastStatus,
+        deliveryType: isStopdesk ? 'office' : 'home',
+      },
+      createdAt: new Date(),
+    });
+
     return this.crmOrdersService.findById(order.id);
   }
 
-  async syncYalidineParcel(orderId: string) {
+  async syncYalidineParcel(orderId: string, user?: CrmUserContext) {
+    const [order] = await this.db
+      .select()
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .limit(1);
+
+    if (!order) {
+      throw new NotFoundException('Commande introuvable');
+    }
+
     const [shipment] = await this.db
       .select()
       .from(shipments)
@@ -180,26 +257,52 @@ export class CrmDeliveryService extends CrmBaseService {
       `/parcels/${encodeURIComponent(shipment.trackingNumber)}`,
     );
     const parcel = Array.isArray(result?.data) ? result.data[0] : result;
-    const lastStatus = String(parcel?.last_status || parcel?.status || '').toLowerCase();
+    const lastStatus =
+      extractYalidineStatus(parcel) ||
+      String(parcel?.status || '').trim();
+    const previousStatus = extractYalidineStatus(shipment.metadata);
+    const mappedOrderStatus = lastStatus
+      ? mapYalidineLastStatus(lastStatus)
+      : null;
 
-    let nextStatus: (typeof shipments.$inferSelect)['status'] = shipment.status;
-    if (lastStatus.includes('livr')) {
-      nextStatus = 'delivered';
-    } else if (lastStatus.includes('retour') || lastStatus.includes('echec') || lastStatus.includes('échec')) {
-      nextStatus = 'failed';
-    } else if (lastStatus.includes('transit') || lastStatus.includes('expédi') || lastStatus.includes('en cours')) {
-      nextStatus = 'in_transit';
+    let nextShipmentStatus: (typeof shipments.$inferSelect)['status'] =
+      shipment.status;
+    if (mappedOrderStatus === 'delivered') {
+      nextShipmentStatus = 'delivered';
+    } else if (mappedOrderStatus === 'refunded') {
+      nextShipmentStatus = 'failed';
+    } else if (mappedOrderStatus === 'shipped') {
+      nextShipmentStatus = 'in_transit';
     }
+
+    const previousMetadata =
+      shipment.metadata && typeof shipment.metadata === 'object'
+        ? (shipment.metadata as Record<string, unknown>)
+        : {};
 
     await this.db
       .update(shipments)
       .set({
-        status: nextStatus,
-        metadata: parcel,
+        status: nextShipmentStatus,
+        metadata: {
+          ...previousMetadata,
+          ...(parcel || {}),
+          last_status: lastStatus || previousStatus,
+        },
         syncedAt: new Date(),
         updatedAt: new Date(),
       })
       .where(eq(shipments.id, shipment.id));
+
+    if (lastStatus && lastStatus !== previousStatus) {
+      await this.applyYalidineOrderStatus(
+        order,
+        lastStatus,
+        mappedOrderStatus,
+        shipment.trackingNumber,
+        user,
+      );
+    }
 
     return this.crmOrdersService.findById(orderId);
   }
@@ -295,6 +398,128 @@ export class CrmDeliveryService extends CrmBaseService {
       .from(shipments)
       .orderBy(desc(shipments.updatedAt))
       .limit(100);
+  }
+
+  private async applyYalidineOrderStatus(
+    order: typeof orders.$inferSelect,
+    lastStatus: string,
+    mappedStatus: DbOrderStatus | null,
+    tracking: string,
+    user?: CrmUserContext,
+  ) {
+    const shouldUpdate =
+      Boolean(mappedStatus) &&
+      canApplyYalidineStatus(order.status, mappedStatus as DbOrderStatus);
+    const nextStatus = shouldUpdate ? (mappedStatus as DbOrderStatus) : order.status;
+    const reason = `Yalidine: ${lastStatus}`;
+
+    if (shouldUpdate) {
+      const updateData: Record<string, unknown> = {
+        status: nextStatus,
+        updatedAt: new Date(),
+      };
+      if (nextStatus === 'shipped' && !order.shippedAt) {
+        updateData.shippedAt = new Date();
+      }
+      if (nextStatus === 'delivered' && !order.deliveredAt) {
+        updateData.deliveredAt = new Date();
+      }
+      if (nextStatus === 'refunded' && !order.cancelledAt) {
+        updateData.cancelledAt = new Date();
+        updateData.cancelReason = reason;
+      }
+
+      await this.db.update(orders).set(updateData).where(eq(orders.id, order.id));
+    }
+
+    await this.db.insert(orderStatusHistory).values({
+      orderId: order.id,
+      fromStatus: order.status,
+      toStatus: nextStatus,
+      changedByUserId: user?.id,
+      reason,
+      metadata: {
+        tracking,
+        last_status: lastStatus,
+        provider: 'yalidine',
+      },
+      createdAt: new Date(),
+    });
+  }
+
+  private async resolveStopdesk(order: typeof orders.$inferSelect) {
+    const existingId = Number(order.deliveryOfficeId);
+    if (Number.isFinite(existingId) && existingId > 0) {
+      return {
+        centerId: existingId,
+        name: order.deliveryOfficeName || '',
+        address: '',
+        commune: order.commune || '',
+        wilaya: order.wilayaName,
+      };
+    }
+
+    const centers = await this.listYalidineCenters(order.wilayaCode);
+    if (centers.length === 0) {
+      throw new BadRequestException(
+        `Aucun bureau Yalidine pour ${order.wilayaName}`,
+      );
+    }
+
+    const wantedName = (order.deliveryOfficeName || '').trim().toLowerCase();
+    const wantedCommune = (order.commune || '').trim().toLowerCase();
+    const exactName = centers.find(
+      (center) => center.name.toLowerCase() === wantedName,
+    );
+    const partialName = centers.find(
+      (center) =>
+        wantedName &&
+        (center.name.toLowerCase().includes(wantedName) ||
+          wantedName.includes(center.name.toLowerCase())),
+    );
+    const communeMatch = centers.find(
+      (center) =>
+        wantedCommune && center.commune.toLowerCase() === wantedCommune,
+    );
+    const match =
+      exactName ||
+      partialName ||
+      communeMatch ||
+      (centers.length === 1 ? centers[0] : undefined);
+
+    if (!match) {
+      throw new BadRequestException(
+        `Bureau Yalidine introuvable pour ${order.wilayaName}. Choisissez un centre Yalidine.`,
+      );
+    }
+
+    return match;
+  }
+
+  private formatProductList(
+    items: Array<{
+      productName: string;
+      quantity: number;
+      colorName: string | null;
+      personalization: unknown;
+    }>,
+  ) {
+    if (items.length === 0) {
+      return 'Commande Michket';
+    }
+
+    return items
+      .map((item) => {
+        const extras = [
+          item.colorName,
+          personalizationText(item.personalization),
+        ].filter(Boolean);
+        const name = extras.length
+          ? `${item.productName} (${extras.join(', ')})`
+          : item.productName;
+        return `${item.quantity}x ${name}`;
+      })
+      .join(', ');
   }
 
   private credentials() {
@@ -421,7 +646,7 @@ export class CrmDeliveryService extends CrmBaseService {
       }
       const deliverable = rows.find((row) => row.is_deliverable);
       return deliverable?.name || commune;
-    } catch (error) {
+    } catch {
       this.logger.warn(`Yalidine communes lookup failed for wilaya ${wilayaCode}`);
       return commune;
     }

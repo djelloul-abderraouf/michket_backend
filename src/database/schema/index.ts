@@ -28,6 +28,7 @@ export {
   payments,
   webhookEvents,
   orderStatusEnum,
+  orderSourceEnum,
   paymentStatusEnum,
   shipmentStatusEnum,
 } from './orders';

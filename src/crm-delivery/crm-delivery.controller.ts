@@ -3,6 +3,7 @@ import {
   Get,
   Param,
   Post,
+  Query,
   StreamableFile,
   UseGuards,
 } from '@nestjs/common';
@@ -39,6 +40,16 @@ export class CrmDeliveryController {
     return this.crmDeliveryService.getYalidineHealth();
   }
 
+  @Get('yalidine/centers')
+  @ApiOperation({ summary: 'List Yalidine stop desks / bureaux for a wilaya' })
+  @CrmRoles('admin', 'livraison', 'preparation', 'confirmation', 'commercial')
+  async listCenters(@Query('wilayaCode') wilayaCode?: string) {
+    const parsed = Number(wilayaCode);
+    return this.crmDeliveryService.listYalidineCenters(
+      Number.isFinite(parsed) && parsed > 0 ? parsed : undefined,
+    );
+  }
+
   @Get('yalidine/:orderId/label')
   @ApiOperation({ summary: 'Get official Yalidine bordereau URL' })
   @CrmRoles('admin', 'livraison', 'preparation', 'confirmation', 'commercial')
@@ -69,9 +80,12 @@ export class CrmDeliveryController {
   }
 
   @Post('yalidine/:orderId/sync')
-  @ApiOperation({ summary: 'Refresh Yalidine tracking for an order' })
-  @CrmRoles('admin', 'livraison', 'preparation')
-  async syncParcel(@Param('orderId') orderId: string) {
-    return this.crmDeliveryService.syncYalidineParcel(orderId);
+  @ApiOperation({ summary: 'Refresh Yalidine tracking and write status history' })
+  @CrmRoles('admin', 'livraison', 'preparation', 'confirmation', 'commercial')
+  async syncParcel(
+    @Param('orderId') orderId: string,
+    @CurrentCrmUser() crmUser: { id: string },
+  ) {
+    return this.crmDeliveryService.syncYalidineParcel(orderId, crmUser);
   }
 }

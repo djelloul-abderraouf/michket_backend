@@ -777,6 +777,7 @@ export class OrdersService {
       .values({
         reference,
         userId: orderData.userId ?? null,
+        source: 'ecom',
 
         status: 'pending',
 

@@ -361,7 +361,36 @@ export class ProductsService {
       .leftJoin(categories, eq(products.categoryId, categories.id))
       .orderBy(desc(products.createdAt));
 
-    return this.attachPrimaryImages(productList);
+    const withImages = await this.attachPrimaryImages(productList);
+    if (withImages.length === 0) {
+      return [];
+    }
+
+    const variantRows = await this.db
+      .select({
+        id: productVariants.id,
+        productId: productVariants.productId,
+        name: productVariants.name,
+        colorName: productVariants.colorName,
+        colorHex: productVariants.colorHex,
+        isActive: productVariants.isActive,
+        sortOrder: productVariants.sortOrder,
+      })
+      .from(productVariants)
+      .where(
+        inArray(
+          productVariants.productId,
+          withImages.map((product) => product.id),
+        ),
+      )
+      .orderBy(asc(productVariants.sortOrder), asc(productVariants.name));
+
+    return withImages.map((product) => ({
+      ...product,
+      variants: variantRows.filter(
+        (variant) => variant.productId === product.id && variant.isActive,
+      ),
+    }));
   }
 
   async setActive(id: string, isActive: boolean) {

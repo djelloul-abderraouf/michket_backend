@@ -46,6 +46,7 @@ export class CrmOrdersController {
   async getAllOrders(
     @Query('status') status?: string,
     @Query('wilaya') wilaya?: string,
+    @Query('source') source?: string,
     @Query('search') search?: string,
     @Query('page') page?: number,
     @Query('limit') limit?: number,
@@ -53,10 +54,18 @@ export class CrmOrdersController {
     return this.crmOrdersService.findAll({
       status,
       wilaya,
+      source,
       search,
       page: page || 1,
       limit: limit || 50,
     });
+  }
+
+  @Get('client-by-phone')
+  @ApiOperation({ summary: 'Lookup existing CRM client and prior orders by phone' })
+  @CrmRoles('admin', 'commercial', 'confirmation')
+  async lookupClientByPhone(@Query('phone') phone?: string) {
+    return this.crmOrdersService.lookupClientByPhone(phone || '');
   }
 
   @Get(':id')

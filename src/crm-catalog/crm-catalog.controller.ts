@@ -137,6 +137,12 @@ function mapCrmProduct(product: {
   imageUrl?: string | null;
   isActive: boolean;
   isPersonalizable?: boolean | null;
+  variants?: Array<{
+    id: string;
+    name: string;
+    colorName: string | null;
+    colorHex: string | null;
+  }>;
 }) {
   return {
     id: product.id,
@@ -150,6 +156,12 @@ function mapCrmProduct(product: {
     averageBuildHours: product.isPersonalizable ? 6 : 4,
     active: product.isActive,
     isPersonalizable: product.isPersonalizable,
+    variants: (product.variants || []).map((variant) => ({
+      id: variant.id,
+      name: variant.name,
+      colorName: variant.colorName,
+      colorHex: variant.colorHex,
+    })),
   };
 }
 

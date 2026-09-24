@@ -42,12 +42,22 @@ export const shipmentStatusEnum = pgEnum('shipment_status', [
   'cancelled',
 ]);
 
+export const orderSourceEnum = pgEnum('order_source', [
+  'ecom',
+  'whatsapp',
+  'facebook',
+  'instagram',
+]);
+
 export const orders = pgTable(
   'orders',
   {
     id: uuid('id').primaryKey().defaultRandom(),
 
     reference: text('reference').notNull().unique(),
+
+    // Checkout inserts omit this field and get ecom via the DB default.
+    source: orderSourceEnum('source').notNull().default('ecom'),
 
     // Null for guest checkout.
     userId: uuid('user_id').references(() => users.id, {
