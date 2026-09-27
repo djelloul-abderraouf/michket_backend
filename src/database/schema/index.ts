@@ -24,6 +24,8 @@ export {
   orders,
   orderItems,
   orderStatusHistory,
+  orderRemarks,
+  orderContactAttempts,
   shipments,
   payments,
   webhookEvents,

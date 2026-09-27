@@ -14,6 +14,7 @@ export class AuthController {
       id: req.user.id,
       email: req.user.email,
       role: req.user.role,
+      staffRoles: req.user.staffRoles ?? [],
       firstName: req.user.firstName,
       lastName: req.user.lastName,
       isActive: req.user.isActive ?? true,

@@ -16,9 +16,11 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import {
+  ArrayMinSize,
+  IsArray,
   IsBoolean,
   IsEmail,
-  IsEnum,
+  IsIn,
   IsOptional,
   IsString,
   MinLength,
@@ -64,16 +66,20 @@ class CreateCrmUserDto {
   @IsString()
   phone?: string;
 
-  @ApiProperty({ enum: STAFF_ROLES })
-  @IsEnum(STAFF_ROLES)
-  role!: (typeof STAFF_ROLES)[number];
+  @ApiProperty({ enum: STAFF_ROLES, isArray: true })
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsIn(STAFF_ROLES, { each: true })
+  roles!: (typeof STAFF_ROLES)[number][];
 }
 
 class UpdateCrmUserDto {
-  @ApiPropertyOptional({ enum: STAFF_ROLES })
+  @ApiPropertyOptional({ enum: STAFF_ROLES, isArray: true })
   @IsOptional()
-  @IsEnum(STAFF_ROLES)
-  role?: (typeof STAFF_ROLES)[number];
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsIn(STAFF_ROLES, { each: true })
+  roles?: (typeof STAFF_ROLES)[number][];
 
   @ApiPropertyOptional()
   @IsOptional()

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Inject,
   Injectable,
   Logger,
@@ -24,6 +25,8 @@ import {
   crmContacts,
   orderItems,
   orders,
+  orderContactAttempts,
+  orderRemarks,
   orderStatusHistory,
   productImages,
   products,
@@ -41,7 +44,8 @@ import {
 } from '../crm-base/crm-status';
 import { joinOrderName, splitOrderName } from '../crm-base/order-name';
 import { personalizationText, toPersonalizationJson } from '../crm-base/personalization';
-import { normalizePhone, phoneKey } from '../crm-base/phone';
+import { assertClientPhone, phoneKey } from '../crm-base/phone';
+import { assertCanChangeOrderStatus } from '../crm-base/order-access';
 import { CreateCrmOrderDto } from './dto/crm-orders.dto';
 import { CrmDeliveryService } from '../crm-delivery/crm-delivery.service';
 import { extractYalidineStatus } from '../crm-delivery/yalidine-status';
@@ -51,7 +55,16 @@ type CrmUserContext = {
   email?: string;
   firstName?: string;
   lastName?: string;
+  roles?: string[];
 };
+
+const ORDER_KINDS = [
+  'urgent',
+  'propre',
+  'refabrication_0',
+  'correction_interne',
+  'recupe',
+] as const;
 
 @Injectable()
 export class CrmOrdersService extends CrmBaseService {
@@ -170,6 +183,19 @@ export class CrmOrdersService extends CrmBaseService {
       throw new NotFoundException('Order with ID ' + id + ' not found');
     }
 
+    const jobs = await this.db
+      .select({ status: crmProductionJobs.status })
+      .from(crmProductionJobs)
+      .where(eq(crmProductionJobs.orderId, order.id));
+    const productionComplete =
+      jobs.length > 0 && jobs.every((job) => job.status === 'termine');
+    const fromCrm = toCrmOrderStatus(order.status, productionComplete);
+    const nextCrm = isCrmOrderStatus(newStatus)
+      ? newStatus
+      : toCrmOrderStatus(newStatus);
+
+    assertCanChangeOrderStatus(user?.roles, fromCrm, nextCrm);
+
     const crmStatus = isCrmOrderStatus(newStatus)
       ? newStatus
       : toCrmOrderStatus(newStatus);
@@ -285,7 +311,10 @@ export class CrmOrdersService extends CrmBaseService {
   async create(dto: CreateCrmOrderDto, user?: CrmUserContext) {
     let firstName = dto.firstName.trim();
     let lastName = (dto.lastName ?? '').trim();
-    let phone = normalizePhone(dto.phone);
+    let phone = assertClientPhone(dto.phone);
+    if (!ORDER_KINDS.includes(dto.orderKind)) {
+      throw new BadRequestException('Le type de commande est obligatoire.');
+    }
     let email = dto.email?.trim() || null;
     let wilayaName = dto.wilayaName?.trim() || 'Alger';
     let wilayaCode =
@@ -321,9 +350,14 @@ export class CrmOrdersService extends CrmBaseService {
     if (contact) {
       firstName = contact.firstName;
       lastName = contact.lastName;
-      phone = contact.phone;
       email = contact.email || email;
       wilayaName = contact.wilaya || wilayaName;
+      if (phoneKey(contact.phone) !== phoneKey(phone)) {
+        await this.db
+          .update(crmContacts)
+          .set({ phone, updatedAt: new Date() })
+          .where(eq(crmContacts.id, contact.id));
+      }
     } else {
       const clientType = dto.clientType || 'particulier';
       const [createdContact] = await this.db
@@ -439,6 +473,7 @@ export class CrmOrdersService extends CrmBaseService {
             ? dto.deliveryOfficeName?.trim() || null
             : null,
         notes: dto.notes,
+        orderKind: dto.orderKind,
         paymentMethod: 'cod',
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -477,6 +512,172 @@ export class CrmOrdersService extends CrmBaseService {
     return mapped;
   }
 
+  async updateClientPhone(id: string, phone: string) {
+    const normalized = assertClientPhone(phone);
+    const [order] = await this.db
+      .select()
+      .from(orders)
+      .where(eq(orders.id, id))
+      .limit(1);
+
+    if (!order) {
+      throw new NotFoundException('Order with ID ' + id + ' not found');
+    }
+
+    const previousKey = phoneKey(order.phone);
+    const nextKey = phoneKey(normalized);
+    if (previousKey && previousKey !== nextKey) {
+      const allOrders = await this.db
+        .select({ id: orders.id, phone: orders.phone })
+        .from(orders);
+      const ids = allOrders
+        .filter((row) => phoneKey(row.phone) === previousKey)
+        .map((row) => row.id);
+      if (ids.length > 0) {
+        await this.db
+          .update(orders)
+          .set({ phone: normalized, updatedAt: new Date() })
+          .where(inArray(orders.id, ids));
+      }
+
+      const contacts = await this.db.select().from(crmContacts);
+      const contact = contacts.find((row) => phoneKey(row.phone) === previousKey);
+      if (contact) {
+        await this.db
+          .update(crmContacts)
+          .set({ phone: normalized, updatedAt: new Date() })
+          .where(eq(crmContacts.id, contact.id));
+      }
+    } else {
+      await this.db
+        .update(orders)
+        .set({ phone: normalized, updatedAt: new Date() })
+        .where(eq(orders.id, id));
+    }
+
+    return this.findById(id);
+  }
+
+  async updateOrderKind(id: string, orderKind: (typeof ORDER_KINDS)[number]) {
+    if (!ORDER_KINDS.includes(orderKind)) {
+      throw new BadRequestException('Type de commande invalide.');
+    }
+
+    const [order] = await this.db
+      .select({ id: orders.id })
+      .from(orders)
+      .where(eq(orders.id, id))
+      .limit(1);
+
+    if (!order) {
+      throw new NotFoundException('Order with ID ' + id + ' not found');
+    }
+
+    await this.db
+      .update(orders)
+      .set({ orderKind, updatedAt: new Date() })
+      .where(eq(orders.id, id));
+
+    return this.findById(id);
+  }
+
+  async addRemark(id: string, body: string, user?: CrmUserContext) {
+    if (!user?.id) {
+      throw new ForbiddenException('Utilisateur requis');
+    }
+    const text = body.trim();
+    if (!text) {
+      throw new BadRequestException('La remarque est obligatoire.');
+    }
+
+    const [order] = await this.db
+      .select({ id: orders.id })
+      .from(orders)
+      .where(eq(orders.id, id))
+      .limit(1);
+    if (!order) {
+      throw new NotFoundException('Order with ID ' + id + ' not found');
+    }
+
+    await this.db.insert(orderRemarks).values({
+      orderId: id,
+      authorId: user.id,
+      body: text,
+    });
+
+    return this.findById(id);
+  }
+
+  async deleteRemark(orderId: string, remarkId: string, user?: CrmUserContext) {
+    if (!user?.id) {
+      throw new ForbiddenException('Utilisateur requis');
+    }
+
+    const [remark] = await this.db
+      .select()
+      .from(orderRemarks)
+      .where(eq(orderRemarks.id, remarkId))
+      .limit(1);
+
+    if (!remark || remark.orderId !== orderId) {
+      throw new NotFoundException('Remarque introuvable');
+    }
+
+    if (remark.authorId !== user.id) {
+      throw new ForbiddenException(
+        'Vous pouvez supprimer uniquement vos remarques.',
+      );
+    }
+
+    await this.db.delete(orderRemarks).where(eq(orderRemarks.id, remarkId));
+    return this.findById(orderId);
+  }
+
+  async addContactAttempt(id: string, notes: string, user?: CrmUserContext) {
+    if (!user?.id) {
+      throw new ForbiddenException('Utilisateur requis');
+    }
+    const text = notes.trim();
+    if (!text) {
+      throw new BadRequestException('La note de tentative est obligatoire.');
+    }
+
+    const [order] = await this.db
+      .select({ id: orders.id })
+      .from(orders)
+      .where(eq(orders.id, id))
+      .limit(1);
+    if (!order) {
+      throw new NotFoundException('Order with ID ' + id + ' not found');
+    }
+
+    const existing = await this.db
+      .select({ attemptNumber: orderContactAttempts.attemptNumber })
+      .from(orderContactAttempts)
+      .where(eq(orderContactAttempts.orderId, id));
+
+    if (existing.length >= 5) {
+      throw new BadRequestException(
+        'Cinq tentatives de contact sont deja enregistrees.',
+      );
+    }
+
+    const used = new Set(existing.map((row) => row.attemptNumber));
+    let attemptNumber = 1;
+    while (used.has(attemptNumber) && attemptNumber <= 5) {
+      attemptNumber += 1;
+    }
+
+    await this.db.insert(orderContactAttempts).values({
+      orderId: id,
+      attemptNumber,
+      notes: text,
+      employeeId: user.id,
+    });
+
+    return this.findById(id);
+  }
+
   private async findContactByPhone(phone: string) {
     const key = phoneKey(phone);
     if (!key) {
@@ -497,7 +698,8 @@ export class CrmOrdersService extends CrmBaseService {
     const includeHistory = options?.includeHistory !== false;
     const orderIds = orderRows.map((order) => order.id);
 
-    const [itemRows, historyRows, jobRows, shipmentRows] = await Promise.all([
+    const [itemRows, historyRows, jobRows, shipmentRows, remarkRows, attemptRows] =
+      await Promise.all([
       this.db
         .select({
           orderId: orderItems.orderId,
@@ -532,6 +734,16 @@ export class CrmOrdersService extends CrmBaseService {
         .select()
         .from(shipments)
         .where(inArray(shipments.orderId, orderIds)),
+      this.db
+        .select()
+        .from(orderRemarks)
+        .where(inArray(orderRemarks.orderId, orderIds))
+        .orderBy(desc(orderRemarks.createdAt)),
+      this.db
+        .select()
+        .from(orderContactAttempts)
+        .where(inArray(orderContactAttempts.orderId, orderIds))
+        .orderBy(orderContactAttempts.attemptNumber),
     ]);
     const shipmentByOrder = new Map(
       shipmentRows.map((row) => [row.orderId, row]),
@@ -539,9 +751,11 @@ export class CrmOrdersService extends CrmBaseService {
 
     const authorIds = [
       ...new Set(
-        historyRows
-          .map((row) => row.changedByUserId)
-          .filter((value): value is string => Boolean(value)),
+        [
+          ...historyRows.map((row) => row.changedByUserId),
+          ...remarkRows.map((row) => row.authorId),
+          ...attemptRows.map((row) => row.employeeId),
+        ].filter((value): value is string => Boolean(value)),
       ),
     ];
 
@@ -646,6 +860,27 @@ export class CrmOrdersService extends CrmBaseService {
         total: centsToDzd(order.totalCents),
         totalCents: order.totalCents,
         notes: order.notes,
+        orderKind: order.orderKind,
+        remarks: remarkRows
+          .filter((remark) => remark.orderId === order.id)
+          .map((remark) => ({
+            id: remark.id,
+            body: remark.body,
+            authorId: remark.authorId,
+            authorName: authors.get(remark.authorId) ?? 'Equipe',
+            createdAt: this.toIso(remark.createdAt) ?? new Date().toISOString(),
+          })),
+        contactAttempts: attemptRows
+          .filter((attempt) => attempt.orderId === order.id)
+          .map((attempt) => ({
+            id: attempt.id,
+            attemptNumber: attempt.attemptNumber,
+            notes: attempt.notes,
+            employeeId: attempt.employeeId,
+            employeeName: authors.get(attempt.employeeId) ?? 'Equipe',
+            createdAt:
+              this.toIso(attempt.createdAt) ?? new Date().toISOString(),
+          })),
         cancelReason: order.cancelReason,
         trackingNumber: shipment?.trackingNumber ?? null,
         carrier: shipment?.provider ?? null,

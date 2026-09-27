@@ -95,6 +95,9 @@ export const orders = pgTable(
 
     notes: text('notes'),
 
+    // Commercial order nature: urgent, propre, refabrication, correction, recupe.
+    orderKind: text('order_kind'),
+
     // Promo snapshot.
     promoCode: text('promo_code'),
 
@@ -157,6 +160,10 @@ export const orders = pgTable(
     check(
       'orders_delivery_type_valid',
       sql`${table.deliveryType} IN ('home', 'office')`,
+    ),
+    check(
+      'orders_order_kind_valid',
+      sql`${table.orderKind} IS NULL OR ${table.orderKind} IN ('urgent', 'propre', 'refabrication_0', 'correction_interne', 'recupe')`,
     ),
   ],
 );
@@ -303,6 +310,62 @@ export const shipments = pgTable(
     uniqueIndex('shipments_provider_external_unique_idx')
       .on(table.provider, table.externalShipmentId)
       .where(sql`${table.externalShipmentId} IS NOT NULL`),
+  ],
+);
+
+export const orderRemarks = pgTable(
+  'order_remarks',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    body: text('body').notNull(),
+
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index('order_remarks_order_idx').on(table.orderId)],
+);
+
+export const orderContactAttempts = pgTable(
+  'order_contact_attempts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+
+    attemptNumber: integer('attempt_number').notNull(),
+
+    notes: text('notes').notNull(),
+
+    employeeId: uuid('employee_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('order_contact_attempts_order_number_idx').on(
+      table.orderId,
+      table.attemptNumber,
+    ),
+    index('order_contact_attempts_order_idx').on(table.orderId),
+    check(
+      'order_contact_attempts_number_range',
+      sql`${table.attemptNumber} BETWEEN 1 AND 5`,
+    ),
   ],
 );
 

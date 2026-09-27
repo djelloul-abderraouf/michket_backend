@@ -32,7 +32,11 @@ import {
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { DeliveryService } from '../delivery/delivery.service';
 import { AuthService } from '../auth/auth.service';
-import { CRM_STAFF_ROLES } from '../auth/crm-role-map';
+import {
+  CRM_STAFF_ROLES,
+  primaryStaffRole,
+  type CrmStaffRole,
+} from '../auth/crm-role-map';
 
 type ProfileUpdate = {
   firstName?: string;
@@ -73,6 +77,7 @@ export class UsersService {
         lastName: users.lastName,
         phone: users.phone,
         role: users.role,
+        staffRoles: users.staffRoles,
         isActive: users.isActive,
         createdAt: users.createdAt,
         updatedAt: users.updatedAt,
@@ -93,6 +98,7 @@ export class UsersService {
         lastName: users.lastName,
         phone: users.phone,
         role: users.role,
+        staffRoles: users.staffRoles,
         isActive: users.isActive,
         createdAt: users.createdAt,
         updatedAt: users.updatedAt,
@@ -298,10 +304,33 @@ export class UsersService {
     return { from: fromDate, to: toDate };
   }
 
+  private resolveStaffRoles(input: { role?: string; roles?: string[] }) {
+    const raw = input.roles?.length
+      ? input.roles
+      : input.role
+        ? [input.role]
+        : [];
+    const roles = [
+      ...new Set(
+        raw.filter((role) =>
+          CRM_STAFF_ROLES.includes(role as CrmStaffRole),
+        ),
+      ),
+    ];
+    if (roles.length === 0) {
+      throw new BadRequestException('Au moins un role CRM est requis');
+    }
+    return {
+      role: primaryStaffRole(roles),
+      staffRoles: roles,
+    };
+  }
+
   async updateCrmUser(
     id: string,
     data: {
       role?: typeof users.$inferSelect['role'];
+      roles?: string[];
       isActive?: boolean;
       firstName?: string;
       lastName?: string;
@@ -313,10 +342,17 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
 
+    const assignment =
+      data.roles !== undefined || data.role !== undefined
+        ? this.resolveStaffRoles(data)
+        : undefined;
+
     const [updated] = await this.db
       .update(users)
       .set({
-        ...(data.role !== undefined ? { role: data.role } : {}),
+        ...(assignment
+          ? { role: assignment.role, staffRoles: assignment.staffRoles }
+          : {}),
         ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
         ...(data.firstName !== undefined ? { firstName: data.firstName } : {}),
         ...(data.lastName !== undefined ? { lastName: data.lastName } : {}),
@@ -331,6 +367,7 @@ export class UsersService {
         lastName: users.lastName,
         phone: users.phone,
         role: users.role,
+        staffRoles: users.staffRoles,
         isActive: users.isActive,
         createdAt: users.createdAt,
         updatedAt: users.updatedAt,
@@ -346,11 +383,10 @@ export class UsersService {
     firstName?: string;
     lastName?: string;
     phone?: string;
-    role: typeof users.$inferSelect['role'];
+    role?: typeof users.$inferSelect['role'];
+    roles?: string[];
   }) {
-    if (!CRM_STAFF_ROLES.includes(data.role as (typeof CRM_STAFF_ROLES)[number])) {
-      throw new BadRequestException('Role CRM invalide');
-    }
+    const assignment = this.resolveStaffRoles(data);
 
     const email = data.email.trim().toLowerCase();
     const existing = await this.findByEmail(email);
@@ -393,7 +429,8 @@ export class UsersService {
         firstName: data.firstName?.trim() || null,
         lastName: data.lastName?.trim() || null,
         phone: data.phone?.trim() || null,
-        role: data.role,
+        role: assignment.role,
+        staffRoles: assignment.staffRoles,
         isActive: true,
       })
       .onConflictDoUpdate({
@@ -403,7 +440,8 @@ export class UsersService {
           firstName: data.firstName?.trim() || null,
           lastName: data.lastName?.trim() || null,
           phone: data.phone?.trim() || null,
-          role: data.role,
+          role: assignment.role,
+          staffRoles: assignment.staffRoles,
           isActive: true,
           updatedAt: new Date(),
         },
@@ -415,6 +453,7 @@ export class UsersService {
         lastName: users.lastName,
         phone: users.phone,
         role: users.role,
+        staffRoles: users.staffRoles,
         isActive: users.isActive,
         createdAt: users.createdAt,
         updatedAt: users.updatedAt,
@@ -433,6 +472,7 @@ export class UsersService {
         lastName: users.lastName,
         phone: users.phone,
         role: users.role,
+        staffRoles: users.staffRoles,
         isActive: users.isActive,
         createdAt: users.createdAt,
         updatedAt: users.updatedAt,

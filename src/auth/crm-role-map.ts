@@ -40,17 +40,62 @@ export type AuthUserRecord = {
   id: string;
   email: string;
   role: string;
+  staffRoles?: string[] | null;
   firstName?: string;
   lastName?: string;
   isActive: boolean;
 };
 
-export function hasCrmAccess(role: string, isActive = true): boolean {
-  return isActive && CRM_STAFF_ROLES.includes(role as CrmStaffRole);
+export function assignedStaffRoles(user: {
+  role: string;
+  staffRoles?: string[] | null;
+}): string[] {
+  const stored = (user.staffRoles || []).filter((role) =>
+    CRM_STAFF_ROLES.includes(role as CrmStaffRole),
+  );
+  if (stored.length > 0) {
+    return [...new Set(stored)];
+  }
+  if (CRM_STAFF_ROLES.includes(user.role as CrmStaffRole)) {
+    return [user.role];
+  }
+  return [];
+}
+
+export function expandCrmRoles(assigned: string[]): string[] {
+  const expanded = new Set<string>();
+  for (const role of assigned) {
+    for (const mapped of ROLE_MAPPING[role] || []) {
+      expanded.add(mapped);
+    }
+  }
+  return [...expanded];
+}
+
+export function primaryStaffRole(roles: string[]): CrmStaffRole {
+  if (roles.includes('super_admin')) {
+    return 'super_admin';
+  }
+  if (roles.includes('admin')) {
+    return 'admin';
+  }
+  const first = roles.find((role) =>
+    CRM_STAFF_ROLES.includes(role as CrmStaffRole),
+  );
+  return (first || 'commercial') as CrmStaffRole;
+}
+
+export function hasCrmAccess(
+  role: string,
+  isActive = true,
+  staffRoles?: string[] | null,
+): boolean {
+  return isActive && assignedStaffRoles({ role, staffRoles }).length > 0;
 }
 
 export function toCrmRequestUser(user: AuthUserRecord) {
-  if (!hasCrmAccess(user.role, user.isActive)) {
+  const assigned = assignedStaffRoles(user);
+  if (!hasCrmAccess(user.role, user.isActive, assigned)) {
     return null;
   }
 
@@ -60,6 +105,7 @@ export function toCrmRequestUser(user: AuthUserRecord) {
     firstName: user.firstName,
     lastName: user.lastName,
     role: user.role,
-    roles: ROLE_MAPPING[user.role] || [],
+    staffRoles: assigned,
+    roles: expandCrmRoles(assigned),
   };
 }

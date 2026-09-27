@@ -93,6 +93,12 @@ export class CreateCrmOrderDto {
   @IsString()
   notes?: string;
 
+  @ApiProperty({
+    enum: ['urgent', 'propre', 'refabrication_0', 'correction_interne', 'recupe'],
+  })
+  @IsIn(['urgent', 'propre', 'refabrication_0', 'correction_interne', 'recupe'])
+  orderKind!: 'urgent' | 'propre' | 'refabrication_0' | 'correction_interne' | 'recupe';
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsString()
@@ -136,4 +142,35 @@ export class UpdateCrmOrderStatusDto {
   @IsOptional()
   @IsString()
   note?: string;
+}
+
+export class UpdateCrmOrderPhoneDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  phone!: string;
+}
+
+export class UpdateCrmOrderKindDto {
+  @ApiProperty({
+    enum: ['urgent', 'propre', 'refabrication_0', 'correction_interne', 'recupe'],
+  })
+  @IsIn(['urgent', 'propre', 'refabrication_0', 'correction_interne', 'recupe'])
+  orderKind!: 'urgent' | 'propre' | 'refabrication_0' | 'correction_interne' | 'recupe';
+}
+
+export class CreateOrderRemarkDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  body!: string;
+}
+
+export class CreateContactAttemptDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  notes!: string;
 }

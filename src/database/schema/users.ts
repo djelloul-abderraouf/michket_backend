@@ -6,6 +6,7 @@ import {
   timestamp,
   pgEnum,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 export const userRoleEnum = pgEnum('user_role', [
   'customer',
@@ -28,8 +29,10 @@ export const users = pgTable('users', {
   lastName: text('last_name'),
   phone: text('phone'),
 
-  // Business role for Michket. Never trust the public request body for this field.
+  // Primary business role. Extra CRM roles live in staffRoles.
   role: userRoleEnum('role').notNull().default('customer'),
+
+  staffRoles: text('staff_roles').array().notNull().default(sql`'{}'::text[]`),
 
   isActive: boolean('is_active').notNull().default(true),
 

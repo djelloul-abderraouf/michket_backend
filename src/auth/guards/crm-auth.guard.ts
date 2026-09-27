@@ -13,6 +13,7 @@ export type CrmRequestUser = {
   firstName?: string;
   lastName?: string;
   role: string;
+  staffRoles?: string[];
   roles: string[];
 };
 
@@ -23,6 +24,7 @@ interface CrmRequest {
     firstName?: string;
     lastName?: string;
     role: string;
+    staffRoles?: string[] | null;
   };
   crmUser?: CrmRequestUser;
 }
@@ -50,6 +52,7 @@ export class CrmAuthGuard extends AuthGuard('jwt') {
       id: user.id,
       email: user.email,
       role: user.role,
+      staffRoles: user.staffRoles,
       firstName: user.firstName,
       lastName: user.lastName,
       isActive: true,

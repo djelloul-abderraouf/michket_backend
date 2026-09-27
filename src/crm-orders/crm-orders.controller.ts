@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Delete,
   Body,
   Param,
   Query,
@@ -21,7 +22,11 @@ import { CrmRoles } from '../common/decorators/roles.decorator';
 import { CurrentCrmUser } from '../common/decorators/current-crm-user.decorator';
 import { CrmOrdersService } from './crm-orders.service';
 import {
+  CreateContactAttemptDto,
   CreateCrmOrderDto,
+  CreateOrderRemarkDto,
+  UpdateCrmOrderKindDto,
+  UpdateCrmOrderPhoneDto,
   UpdateCrmOrderStatusDto,
 } from './dto/crm-orders.dto';
 
@@ -105,6 +110,59 @@ export class CrmOrdersController {
       body.note,
       crmUser,
     );
+  }
+
+  @Put(':id/phone')
+  @ApiOperation({ summary: 'Update the client phone on an order' })
+  @CrmRoles('admin', 'commercial')
+  async updatePhone(
+    @Param('id') id: string,
+    @Body() body: UpdateCrmOrderPhoneDto,
+  ) {
+    return this.crmOrdersService.updateClientPhone(id, body.phone);
+  }
+
+  @Put(':id/kind')
+  @ApiOperation({ summary: 'Update the commercial order type' })
+  @CrmRoles('admin', 'commercial')
+  async updateKind(
+    @Param('id') id: string,
+    @Body() body: UpdateCrmOrderKindDto,
+  ) {
+    return this.crmOrdersService.updateOrderKind(id, body.orderKind);
+  }
+
+  @Post(':id/remarks')
+  @ApiOperation({ summary: 'Add a remark the author can later remove' })
+  @CrmRoles('admin', 'commercial', 'livraison', 'confirmation')
+  async addRemark(
+    @Param('id') id: string,
+    @Body() body: CreateOrderRemarkDto,
+    @CurrentCrmUser() crmUser: any,
+  ) {
+    return this.crmOrdersService.addRemark(id, body.body, crmUser);
+  }
+
+  @Delete(':id/remarks/:remarkId')
+  @ApiOperation({ summary: 'Remove a remark written by the current user' })
+  @CrmRoles('admin', 'commercial', 'livraison', 'confirmation')
+  async deleteRemark(
+    @Param('id') id: string,
+    @Param('remarkId') remarkId: string,
+    @CurrentCrmUser() crmUser: any,
+  ) {
+    return this.crmOrdersService.deleteRemark(id, remarkId, crmUser);
+  }
+
+  @Post(':id/contact-attempts')
+  @ApiOperation({ summary: 'Log a client contact attempt, up to five' })
+  @CrmRoles('admin', 'livraison')
+  async addContactAttempt(
+    @Param('id') id: string,
+    @Body() body: CreateContactAttemptDto,
+    @CurrentCrmUser() crmUser: any,
+  ) {
+    return this.crmOrdersService.addContactAttempt(id, body.notes, crmUser);
   }
 
   @Post()
