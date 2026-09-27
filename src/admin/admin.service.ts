@@ -36,6 +36,7 @@ import {
 } from '../database/schema';
 import { cartItems } from '../database/schema/carts';
 import { DATABASE_CONNECTION } from '../database/database.module';
+import { unitPriceCents as resolveUnitPriceCents } from '../products/variant-price';
 import { OrdersService } from '../orders/orders.service';
 import { MediaService } from '../media/media.service';
 import { DeliveryService } from '../delivery/delivery.service';
@@ -5351,9 +5352,10 @@ export class AdminService {
       colorName: variant?.colorName ?? null,
       colorHex: variant?.colorHex ?? null,
 
-      defaultUnitPriceCents:
-        variant?.priceCents ??
+      defaultUnitPriceCents: resolveUnitPriceCents(
         product.priceCents,
+        variant,
+      ),
     };
   }
 

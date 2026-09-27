@@ -22,6 +22,7 @@ import {
   productImages,
 } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
+import { unitPriceCents as resolveUnitPriceCents } from '../products/variant-price';
 
 const MAX_CART_QUANTITY = 99;
 const MAX_PERSONALIZATION_BYTES = 10_000;
@@ -194,9 +195,10 @@ export class CartsService {
         }
       }
 
-      const unitPriceCents =
-        variant?.priceCents ??
-        product.priceCents;
+      const unitPriceCents = resolveUnitPriceCents(
+        product.priceCents,
+        variant,
+      );
 
       const existingConditions = [
         eq(
@@ -517,9 +519,10 @@ export class CartsService {
         effectiveQuantity,
       );
 
-      const unitPriceCents =
-        variant?.priceCents ??
-        product.priceCents;
+      const unitPriceCents = resolveUnitPriceCents(
+        product.priceCents,
+        variant,
+      );
 
       const matchingConditions = [
         eq(
@@ -858,9 +861,10 @@ export class CartsService {
         generalImages[0] ??
         null;
 
-      const authoritativeUnitPriceCents =
-        item.variant?.priceCents ??
-        item.product.priceCents;
+      const authoritativeUnitPriceCents = resolveUnitPriceCents(
+        item.product.priceCents,
+        item.variant,
+      );
 
       return {
         ...item,

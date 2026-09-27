@@ -36,6 +36,7 @@ import {
   productVariants,
 } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
+import { unitPriceCents as resolveUnitPriceCents } from '../products/variant-price';
 import { DeliveryService } from '../delivery/delivery.service';
 import { PromotionsService } from '../promotions/promotions.service';
 
@@ -785,8 +786,10 @@ export class OrdersService {
         )
         .limit(1);
 
-      const unitPriceCents =
-        variant?.priceCents ?? product.priceCents;
+      const unitPriceCents = resolveUnitPriceCents(
+        product.priceCents,
+        variant,
+      );
 
       const totalPriceCents =
         unitPriceCents * item.quantity;
