@@ -609,6 +609,11 @@ export class CreateAdminCategoryDto {
   filterLabel?: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  orderDetailsPrompt?: string;
+
+  @IsOptional()
   @IsUrl({
     protocols: ['https'],
     require_protocol: true,

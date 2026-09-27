@@ -165,6 +165,7 @@ export type CreateAdminCategoryInput = {
   pageTitle?: string;
   productsTitle?: string;
   filterLabel?: string;
+  orderDetailsPrompt?: string;
   imageUrl?: string;
   imageStoragePath?: string;
   href?: string;
@@ -1167,6 +1168,8 @@ export class AdminService {
             input.productsTitle?.trim() || null,
           filterLabel:
             input.filterLabel?.trim() || null,
+          orderDetailsPrompt:
+            input.orderDetailsPrompt?.trim() || null,
           imageUrl:
             input.imageUrl?.trim() || null,
           imageStoragePath:
@@ -1317,6 +1320,11 @@ export class AdminService {
     if (input.filterLabel !== undefined) {
       updateData.filterLabel =
         input.filterLabel?.trim() || null;
+    }
+
+    if (input.orderDetailsPrompt !== undefined) {
+      updateData.orderDetailsPrompt =
+        input.orderDetailsPrompt?.trim() || null;
     }
 
     if (input.imageUrl !== undefined) {

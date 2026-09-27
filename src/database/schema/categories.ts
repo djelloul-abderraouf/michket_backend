@@ -32,6 +32,10 @@ export const categories = pgTable(
     // Example: "Filtrer : Toutes les lampes"
     filterLabel: text('filter_label'),
 
+    // Shown above the single order-details field on a product page.
+    // The customer writes every engraving detail in that one field.
+    orderDetailsPrompt: text('order_details_prompt'),
+
     // Profile / presentation image for the category or subcategory.
     imageUrl: text('image_url'),
 

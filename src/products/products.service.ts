@@ -223,10 +223,11 @@ export class ProductsService {
       .limit(limit)
       .offset(offset);
 
-    const data =
+    const data = await this.attachColors(
       await this.attachPrimaryImages(
         productList,
-      );
+      ),
+    );
 
     return new PaginatedResponseDto(
       data,
@@ -404,6 +405,14 @@ export class ProductsService {
       subsubcategory:
         subsubcategoryRows[0] ??
         null,
+      orderDetailsPrompt:
+        subsubcategoryRows[0]
+          ?.orderDetailsPrompt ||
+        subcategoryRows[0]
+          ?.orderDetailsPrompt ||
+        category?.orderDetailsPrompt ||
+        product.personalizationPrompt ||
+        null,
     };
   }
 
@@ -517,8 +526,10 @@ export class ProductsService {
       )
       .limit(safeLimit);
 
-    return this.attachPrimaryImages(
-      productList,
+    return this.attachColors(
+      await this.attachPrimaryImages(
+        productList,
+      ),
     );
   }
 
@@ -770,6 +781,83 @@ export class ProductsService {
       level,
       subtreeIds,
     };
+  }
+
+  private async attachColors<
+    T extends { id: string },
+  >(
+    productList: T[],
+  ): Promise<
+    Array<
+      T & {
+        colors: Array<{
+          id: string;
+          name: string;
+          hex: string | null;
+          isMulticolor: boolean;
+        }>;
+      }
+    >
+  > {
+    if (productList.length === 0) {
+      return [];
+    }
+
+    const variants = await this.db
+      .select({
+        id: productVariants.id,
+        productId: productVariants.productId,
+        name: productVariants.name,
+        colorName: productVariants.colorName,
+        colorHex: productVariants.colorHex,
+        isMulticolor: productVariants.isMulticolor,
+        sortOrder: productVariants.sortOrder,
+      })
+      .from(productVariants)
+      .where(
+        and(
+          inArray(
+            productVariants.productId,
+            productList.map((product) => product.id),
+          ),
+          eq(productVariants.isActive, true),
+        ),
+      )
+      .orderBy(
+        asc(productVariants.sortOrder),
+        asc(productVariants.name),
+      );
+
+    const colorsByProduct = new Map<
+      string,
+      Array<{
+        id: string;
+        name: string;
+        hex: string | null;
+        isMulticolor: boolean;
+      }>
+    >();
+
+    for (const variant of variants) {
+      const list =
+        colorsByProduct.get(variant.productId) ?? [];
+
+      list.push({
+        id: variant.id,
+        name:
+          variant.colorName?.trim() ||
+          variant.name,
+        hex: variant.colorHex,
+        isMulticolor: variant.isMulticolor,
+      });
+
+      colorsByProduct.set(variant.productId, list);
+    }
+
+    return productList.map((product) => ({
+      ...product,
+      colors: colorsByProduct.get(product.id) ?? [],
+    }));
   }
 
   private async attachPrimaryImages<
