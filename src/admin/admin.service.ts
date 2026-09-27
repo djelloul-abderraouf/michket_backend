@@ -56,7 +56,7 @@ type OrderStatus =
   | 'cancelled'
   | 'refunded';
 
-type UserRole = 'customer' | 'admin' | 'super_admin';
+type UserRole = 'customer' | 'admin' | 'super_admin' | 'social_media';
 
 type ProductBadge =
   | 'BEST_SELLER'

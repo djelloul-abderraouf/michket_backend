@@ -30,7 +30,7 @@ export class AuthService {
   }): Promise<{
     id: string;
     email: string;
-    role: 'customer' | 'admin' | 'super_admin';
+    role: 'customer' | 'admin' | 'super_admin' | 'social_media';
     firstName?: string;
     lastName?: string;
   }> {

@@ -2,6 +2,8 @@
 
 export { users, userRoleEnum } from './users';
 
+export { campaigns, campaignItems } from './campaigns';
+
 export { addresses } from './addresses';
 
 export { categories } from './categories';

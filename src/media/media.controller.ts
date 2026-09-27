@@ -29,9 +29,17 @@ type AuthenticatedRequest = FastifyRequest & {
   user?: {
     id: string;
     email: string;
-    role: 'customer' | 'admin' | 'super_admin';
+    role: 'customer' | 'admin' | 'super_admin' | 'social_media';
   };
 };
+
+function canManageCatalog(role: string | undefined) {
+  return (
+    role === 'admin' ||
+    role === 'super_admin' ||
+    role === 'social_media'
+  );
+}
 
 const EXTENSION_BY_MIME: Record<string, string> = {
   'image/jpeg': 'jpg',
@@ -84,10 +92,7 @@ export class MediaController {
   async uploadProductImage(
     @Req() req: AuthenticatedRequest,
   ) {
-    if (
-      req.user?.role !== 'admin' &&
-      req.user?.role !== 'super_admin'
-    ) {
+    if (!canManageCatalog(req.user?.role)) {
       throw new ForbiddenException(
         'Admin access required',
       );
@@ -171,10 +176,7 @@ export class MediaController {
   async uploadCategoryImage(
     @Req() req: AuthenticatedRequest,
   ) {
-    if (
-      req.user?.role !== 'admin' &&
-      req.user?.role !== 'super_admin'
-    ) {
+    if (!canManageCatalog(req.user?.role)) {
       throw new ForbiddenException(
         'Admin access required',
       );
@@ -257,10 +259,7 @@ export class MediaController {
   async uploadReferenceImage(
     @Req() req: AuthenticatedRequest,
   ) {
-    if (
-      req.user?.role !== 'admin' &&
-      req.user?.role !== 'super_admin'
-    ) {
+    if (!canManageCatalog(req.user?.role)) {
       throw new ForbiddenException(
         'Admin access required',
       );
@@ -332,10 +331,7 @@ export class MediaController {
   async deleteCategoryImage(
     @Req() req: AuthenticatedRequest,
   ) {
-    if (
-      req.user?.role !== 'admin' &&
-      req.user?.role !== 'super_admin'
-    ) {
+    if (!canManageCatalog(req.user?.role)) {
       throw new ForbiddenException(
         'Admin access required',
       );
@@ -403,10 +399,7 @@ export class MediaController {
   async deleteReferenceImage(
     @Req() req: AuthenticatedRequest,
   ) {
-    if (
-      req.user?.role !== 'admin' &&
-      req.user?.role !== 'super_admin'
-    ) {
+    if (!canManageCatalog(req.user?.role)) {
       throw new ForbiddenException(
         'Admin access required',
       );
@@ -479,10 +472,7 @@ export class MediaController {
   async deleteProductImage(
     @Req() req: AuthenticatedRequest,
   ) {
-    if (
-      req.user?.role !== 'admin' &&
-      req.user?.role !== 'super_admin'
-    ) {
+    if (!canManageCatalog(req.user?.role)) {
       throw new ForbiddenException(
         'Admin access required',
       );

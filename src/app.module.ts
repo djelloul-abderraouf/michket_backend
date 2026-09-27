@@ -14,6 +14,7 @@ import { AdminModule } from './admin/admin.module';
 import { DeliveryModule } from './delivery/delivery.module';
 import { UsersModule } from './users/users.module';
 import { MediaModule } from './media/media.module';
+import { CampaignsModule } from './campaigns/campaigns.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { MediaModule } from './media/media.module';
     DeliveryModule,
     UsersModule,
     MediaModule,
+    CampaignsModule,
   ],
 })
 export class AppModule {}

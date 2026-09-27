@@ -55,7 +55,7 @@ type AuthenticatedAdminRequest = FastifyRequest & {
   user: {
     id: string;
     email: string;
-    role: 'admin' | 'super_admin';
+    role: 'admin' | 'super_admin' | 'social_media';
   };
 };
 
@@ -173,7 +173,7 @@ export class AdminController {
   }
 
   @Get('categories')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Get all categories (admin)',
   })
@@ -187,7 +187,7 @@ export class AdminController {
   }
 
   @Post('categories')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Create category',
   })
@@ -198,7 +198,7 @@ export class AdminController {
   }
 
   @Put('categories/:id')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Update category',
   })
@@ -213,7 +213,7 @@ export class AdminController {
   }
 
   @Delete('categories/:id')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Deactivate category',
   })
@@ -226,7 +226,7 @@ export class AdminController {
   // ──── Category Hero Images ────
 
   @Get('categories/:id')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Get category details with hero images',
   })
@@ -237,7 +237,7 @@ export class AdminController {
   }
 
   @Post('categories/:id/hero-images')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Add hero image to subcategory',
   })
@@ -249,7 +249,7 @@ export class AdminController {
   }
 
   @Put('categories/:id/hero-images/reorder')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Reorder category hero images',
   })
@@ -261,7 +261,7 @@ export class AdminController {
   }
 
   @Put('categories/:id/hero-images/:imageId')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Update category hero image',
   })
@@ -274,7 +274,7 @@ export class AdminController {
   }
 
   @Delete('categories/:id/hero-images/:imageId')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Delete category hero image',
   })
@@ -286,7 +286,7 @@ export class AdminController {
   }
 
   @Get('products')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Get all products (admin)',
   })
@@ -300,7 +300,7 @@ export class AdminController {
   }
 
   @Get('products/:id')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary:
       'Get product details with images, variants and inventory',
@@ -312,7 +312,7 @@ export class AdminController {
   }
 
   @Post('products')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Create product',
   })
@@ -323,7 +323,7 @@ export class AdminController {
   }
 
   @Put('products/:id')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Update product',
   })
@@ -338,7 +338,7 @@ export class AdminController {
   }
 
   @Delete('products/:id')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Deactivate product',
   })
@@ -349,7 +349,7 @@ export class AdminController {
   }
 
   @Post('products/:id/images')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Add an image to a product',
   })
@@ -364,7 +364,7 @@ export class AdminController {
   }
 
   @Put('products/:id/images/reorder')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Reorder product images',
   })
@@ -379,7 +379,7 @@ export class AdminController {
   }
 
   @Put('products/:id/images/:imageId')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary:
       'Update a product image or set it as primary',
@@ -398,7 +398,7 @@ export class AdminController {
   }
 
   @Delete('products/:id/images/:imageId')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary:
       'Delete a product image and clean up Storage',
@@ -415,7 +415,7 @@ export class AdminController {
   }
 
   @Post('products/:id/variants')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Create a product variant',
   })
@@ -430,7 +430,7 @@ export class AdminController {
   }
 
   @Put('products/:id/variants/:variantId')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Update a product variant',
   })
@@ -448,7 +448,7 @@ export class AdminController {
   }
 
   @Delete('products/:id/variants/:variantId')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Deactivate a product variant',
   })
@@ -464,7 +464,7 @@ export class AdminController {
   }
 
   @Put('products/:id/inventory')
-  @Roles('admin', 'super_admin')
+  @Roles('admin', 'super_admin', 'social_media')
   @ApiOperation({
     summary: 'Update product or variant inventory',
   })

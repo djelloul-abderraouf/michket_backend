@@ -61,6 +61,7 @@ const USER_ROLES = [
   'customer',
   'admin',
   'super_admin',
+  'social_media',
 ] as const;
 
 const PROMOTION_DISCOUNT_TYPES = [
