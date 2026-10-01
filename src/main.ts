@@ -19,6 +19,55 @@ import { RequestIdInterceptor } from './common/interceptors/request-id.intercept
 const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024;
 const GLOBAL_RATE_LIMIT_MAX = 120;
 
+function isCorsOriginAllowed(
+  origin: string | undefined,
+  rules: string[],
+) {
+  if (!origin) return true;
+
+  const requestOrigin = origin.trim().replace(/\/+$/, '');
+  let url: URL;
+
+  try {
+    url = new URL(requestOrigin);
+  } catch {
+    return false;
+  }
+
+  if (
+    (url.protocol === 'http:' || url.protocol === 'https:') &&
+    (url.hostname === 'localhost' || url.hostname === '127.0.0.1')
+  ) {
+    return true;
+  }
+
+  if (
+    url.protocol === 'https:' &&
+    (url.hostname === 'michket.dz' ||
+      url.hostname === 'www.michket.dz' ||
+      url.hostname === 'hostingersite.com' ||
+      url.hostname.endsWith('.hostingersite.com'))
+  ) {
+    return true;
+  }
+
+  return rules.some((rule) => {
+    if (rule === '*') return true;
+
+    if (rule.includes('*')) {
+      const pattern = new RegExp(
+        `^${rule
+          .split('*')
+          .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+          .join('.*')}$`,
+      );
+      return pattern.test(requestOrigin);
+    }
+
+    return rule === requestOrigin;
+  });
+}
+
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const isProduction =
@@ -98,16 +147,18 @@ async function bootstrap() {
     new RequestIdInterceptor(),
   );
 
-  const corsOrigins = (
+  const corsRules = (
     process.env.CORS_ORIGINS ||
-    'http://localhost:3001'
+    'http://localhost:3000,https://*.hostingersite.com'
   )
     .split(',')
-    .map((origin) => origin.trim())
+    .map((origin) => origin.trim().replace(/\/+$/, ''))
     .filter(Boolean);
 
   app.enableCors({
-    origin: corsOrigins,
+    origin: (origin, callback) => {
+      callback(null, isCorsOriginAllowed(origin, corsRules));
+    },
     credentials: true,
     methods: [
       'GET',
