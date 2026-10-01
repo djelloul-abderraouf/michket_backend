@@ -18,6 +18,7 @@ import {
   productImages,
   products,
   productVariants,
+  trackingPixels,
 } from '../database/schema';
 
 type NormalizedItem = {
@@ -86,6 +87,8 @@ export class CampaignsService {
       publicTitle: row.publicTitle,
       slug: row.slug,
       isActive: row.isActive,
+      metaPixelId: row.metaPixelId,
+      tiktokPixelId: row.tiktokPixelId,
       itemCount: counts.get(row.id) ?? 0,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -106,6 +109,8 @@ export class CampaignsService {
       publicTitle: campaign.publicTitle,
       slug: campaign.slug,
       isActive: campaign.isActive,
+      metaPixelId: campaign.metaPixelId,
+      tiktokPixelId: campaign.tiktokPixelId,
       createdAt: campaign.createdAt,
       updatedAt: campaign.updatedAt,
       items: items.map((item) => ({
@@ -187,10 +192,16 @@ export class CampaignsService {
       throw new NotFoundException('Campagne introuvable');
     }
 
+    const pixels = await this.publicPixels(
+      campaign.metaPixelId,
+      campaign.tiktokPixelId,
+    );
+
     return {
       id: campaign.id,
       slug: campaign.slug,
       publicTitle: campaign.publicTitle,
+      pixels,
       items: publicItems,
     };
   }
@@ -198,6 +209,11 @@ export class CampaignsService {
   async create(input: UpsertCampaignDto, userId: string) {
     const normalized = await this.normalizeItems(input.items);
     await this.assertSlugAvailable(input.slug);
+    const metaPixelId = await this.resolvePixel(input.metaPixelId, 'meta');
+    const tiktokPixelId = await this.resolvePixel(
+      input.tiktokPixelId,
+      'tiktok',
+    );
 
     return this.db.transaction(async (tx) => {
       const [campaign] = await tx
@@ -207,6 +223,8 @@ export class CampaignsService {
           publicTitle: input.publicTitle.trim(),
           slug: input.slug,
           isActive: input.isActive ?? true,
+          metaPixelId,
+          tiktokPixelId,
           createdBy: userId,
         })
         .returning();
@@ -229,6 +247,11 @@ export class CampaignsService {
     await this.findCampaign(id);
     const normalized = await this.normalizeItems(input.items);
     await this.assertSlugAvailable(input.slug, id);
+    const metaPixelId = await this.resolvePixel(input.metaPixelId, 'meta');
+    const tiktokPixelId = await this.resolvePixel(
+      input.tiktokPixelId,
+      'tiktok',
+    );
 
     await this.db.transaction(async (tx) => {
       await tx
@@ -238,6 +261,8 @@ export class CampaignsService {
           publicTitle: input.publicTitle.trim(),
           slug: input.slug,
           isActive: input.isActive ?? true,
+          metaPixelId,
+          tiktokPixelId,
           updatedAt: new Date(),
         })
         .where(eq(campaigns.id, id));
@@ -258,6 +283,68 @@ export class CampaignsService {
     });
 
     return { id, slug: input.slug };
+  }
+
+  private async resolvePixel(
+    pixelRowId: string | null | undefined,
+    platform: 'meta' | 'tiktok',
+  ) {
+    if (!pixelRowId) return null;
+
+    const [pixel] = await this.db
+      .select({
+        id: trackingPixels.id,
+        platform: trackingPixels.platform,
+      })
+      .from(trackingPixels)
+      .where(eq(trackingPixels.id, pixelRowId))
+      .limit(1);
+
+    if (!pixel || pixel.platform !== platform) {
+      throw new BadRequestException(
+        platform === 'meta'
+          ? 'Le pixel Meta sélectionné est invalide.'
+          : 'Le pixel TikTok sélectionné est invalide.',
+      );
+    }
+
+    return pixel.id;
+  }
+
+  private async publicPixels(
+    metaPixelId: string | null,
+    tiktokPixelId: string | null,
+  ) {
+    const ids = [metaPixelId, tiktokPixelId].filter(
+      (id): id is string => Boolean(id),
+    );
+
+    if (ids.length === 0) {
+      return { meta: null, tiktok: null };
+    }
+
+    const rows = await this.db
+      .select({
+        id: trackingPixels.id,
+        platform: trackingPixels.platform,
+        pixelId: trackingPixels.pixelId,
+        isActive: trackingPixels.isActive,
+      })
+      .from(trackingPixels)
+      .where(inArray(trackingPixels.id, ids));
+
+    const meta = rows.find(
+      (row) => row.id === metaPixelId && row.platform === 'meta' && row.isActive,
+    );
+    const tiktok = rows.find(
+      (row) =>
+        row.id === tiktokPixelId && row.platform === 'tiktok' && row.isActive,
+    );
+
+    return {
+      meta: meta?.pixelId ?? null,
+      tiktok: tiktok?.pixelId ?? null,
+    };
   }
 
   private async findCampaign(id: string) {

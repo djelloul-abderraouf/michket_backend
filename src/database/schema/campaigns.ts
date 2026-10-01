@@ -9,6 +9,7 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
+import { trackingPixels } from './pixels';
 import { products } from './products';
 import { users } from './users';
 
@@ -18,6 +19,12 @@ export const campaigns = pgTable('campaigns', {
   publicTitle: text('public_title').notNull(),
   slug: text('slug').notNull().unique(),
   isActive: boolean('is_active').notNull().default(true),
+  metaPixelId: uuid('meta_pixel_id').references(() => trackingPixels.id, {
+    onDelete: 'set null',
+  }),
+  tiktokPixelId: uuid('tiktok_pixel_id').references(() => trackingPixels.id, {
+    onDelete: 'set null',
+  }),
   createdBy: uuid('created_by').references(() => users.id, {
     onDelete: 'set null',
   }),

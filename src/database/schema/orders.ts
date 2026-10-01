@@ -14,6 +14,7 @@ import {
 import { sql } from 'drizzle-orm';
 
 import { users } from './users';
+import { campaigns } from './campaigns';
 import { products, productVariants } from './products';
 
 export const orderStatusEnum = pgEnum('order_status', [
@@ -87,6 +88,14 @@ export const orders = pgTable(
 
     // Promo snapshot.
     promoCode: text('promo_code'),
+
+    // Source page snapshot. Campaign orders keep the campaign they came from.
+    // Product-page orders leave these empty and use the item product slug.
+    campaignId: uuid('campaign_id').references(() => campaigns.id, {
+      onDelete: 'set null',
+    }),
+    campaignSlug: text('campaign_slug'),
+    campaignTitle: text('campaign_title'),
 
     // COD for now. Kept as text so another payment method can be added later.
     paymentMethod: text('payment_method').notNull().default('cod'),

@@ -4,6 +4,8 @@ export { users, userRoleEnum } from './users';
 
 export { campaigns, campaignItems } from './campaigns';
 
+export { trackingPixels } from './pixels';
+
 export { addresses } from './addresses';
 
 export { categories } from './categories';

@@ -26,6 +26,8 @@ import { ConfigService } from '@nestjs/config';
 
 import * as schema from '../database/schema';
 import {
+  campaignItems,
+  campaigns,
   idempotencyKeys,
   inventory,
   orderItems,
@@ -80,6 +82,7 @@ export type CreateOrderInput = {
 
   notes?: string;
   promoCode?: string;
+  campaignSlug?: string;
 };
 
 export type OrderIdempotencyContext = {
@@ -624,6 +627,53 @@ export class OrdersService {
     });
   }
 
+  private async resolveCampaignSnapshot(
+    tx: DbTransaction,
+    campaignSlug: string | undefined,
+    productIds: string[],
+  ) {
+    const slug = campaignSlug?.trim();
+    if (!slug) return null;
+
+    const [campaign] = await tx
+      .select({
+        id: campaigns.id,
+        slug: campaigns.slug,
+        publicTitle: campaigns.publicTitle,
+        isActive: campaigns.isActive,
+      })
+      .from(campaigns)
+      .where(eq(campaigns.slug, slug))
+      .limit(1);
+
+    if (!campaign?.isActive) {
+      throw new BadRequestException(
+        'This campaign is no longer available',
+      );
+    }
+
+    const allowedProducts = await tx
+      .select({ productId: campaignItems.productId })
+      .from(campaignItems)
+      .where(eq(campaignItems.campaignId, campaign.id));
+
+    const allowed = new Set(
+      allowedProducts.map((row) => row.productId),
+    );
+
+    if (productIds.some((productId) => !allowed.has(productId))) {
+      throw new BadRequestException(
+        'A selected product is not part of this campaign',
+      );
+    }
+
+    return {
+      id: campaign.id,
+      slug: campaign.slug,
+      title: campaign.publicTitle,
+    };
+  }
+
   private async createOrderInTransaction(
     tx: DbTransaction,
     orderData: CreateOrderInput & {
@@ -640,6 +690,13 @@ export class OrdersService {
     const guestAccessTokenHash = guestAccessToken
       ? this.hashGuestAccessToken(guestAccessToken)
       : null;
+
+    const campaignSnapshot =
+      await this.resolveCampaignSnapshot(
+        tx,
+        orderData.campaignSlug,
+        orderData.items.map((item) => item.productId),
+      );
 
     let subtotalCents = 0;
 
@@ -874,6 +931,10 @@ export class OrdersService {
 
         notes: orderData.notes?.trim() || null,
         promoCode,
+
+        campaignId: campaignSnapshot?.id ?? null,
+        campaignSlug: campaignSnapshot?.slug ?? null,
+        campaignTitle: campaignSnapshot?.title ?? null,
 
         paymentMethod: 'cod',
         paymentStatus: 'pending',

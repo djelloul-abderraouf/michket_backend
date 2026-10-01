@@ -56,6 +56,14 @@ export class UpsertCampaignDto {
   @IsBoolean()
   isActive?: boolean;
 
+  @IsOptional()
+  @IsUUID()
+  metaPixelId?: string | null;
+
+  @IsOptional()
+  @IsUUID()
+  tiktokPixelId?: string | null;
+
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(20)

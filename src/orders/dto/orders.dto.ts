@@ -10,6 +10,7 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  Matches,
   IsUUID,
   Max,
   MaxLength,
@@ -95,4 +96,10 @@ export class CreateOrderDto {
   @IsString()
   @MaxLength(100)
   promoCode?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(160)
+  @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+  campaignSlug?: string;
 }

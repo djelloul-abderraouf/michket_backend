@@ -15,6 +15,7 @@ import { DeliveryModule } from './delivery/delivery.module';
 import { UsersModule } from './users/users.module';
 import { MediaModule } from './media/media.module';
 import { CampaignsModule } from './campaigns/campaigns.module';
+import { PixelsModule } from './pixels/pixels.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { CampaignsModule } from './campaigns/campaigns.module';
     UsersModule,
     MediaModule,
     CampaignsModule,
+    PixelsModule,
   ],
 })
 export class AppModule {}
