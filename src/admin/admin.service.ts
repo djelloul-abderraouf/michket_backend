@@ -22,6 +22,7 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import * as schema from '../database/schema';
 import {
+  campaigns,
   categories,
   categoryImages,
   clientReferences,
@@ -284,13 +285,20 @@ export class AdminService {
   async getDashboard() {
     const [
       [ordersCount],
+      [pendingOrders],
       [revenueResult],
       [productsCount],
       [usersCount],
+      [campaignCount],
     ] = await Promise.all([
       this.db
         .select({ count: sql<number>`count(*)::int` })
         .from(orders),
+
+      this.db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(orders)
+        .where(eq(orders.status, 'pending')),
 
       this.db
         .select({
@@ -312,14 +320,21 @@ export class AdminService {
       this.db
         .select({ count: sql<number>`count(*)::int` })
         .from(users),
+
+      this.db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(campaigns)
+        .where(eq(campaigns.isActive, true)),
     ]);
 
     return {
       totalOrders: ordersCount?.count ?? 0,
+      pendingOrders: pendingOrders?.count ?? 0,
       totalRevenueCents: revenueResult?.total ?? 0,
       currency: 'DZD',
       totalProducts: productsCount?.count ?? 0,
       totalUsers: usersCount?.count ?? 0,
+      activeCampaigns: campaignCount?.count ?? 0,
     };
   }
 
