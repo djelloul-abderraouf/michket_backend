@@ -9,10 +9,8 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 import * as schema from '../database/schema';
 import {
-  categories,
   orderItems,
   orders,
-  products,
   stockItems,
   stockManufacturingOrders,
   stockMovements,
@@ -52,9 +50,7 @@ export class CrmStockService extends CrmBaseService {
   }
 
   async listItems() {
-    await this.syncCatalogProducts();
-    const items = (await this.db.select().from(stockItems).orderBy(stockItems.name))
-      .filter((item) => item.catalogProductId);
+    const items = await this.db.select().from(stockItems).orderBy(stockItems.name);
     const balances = await this.balances();
     return items.map((item) => this.mapItem(item, balances.get(item.id) ?? 0));
   }
@@ -346,10 +342,9 @@ export class CrmStockService extends CrmBaseService {
   }
 
   async applyOrderSale(orderId: string, user?: Actor) {
-    const empty = { deducted: [] as Array<{ itemId: string; name: string; quantity: number }>, unmatched: [] as string[], alerts: [] as Array<{ id: string; name: string; currentQuantity: number; minQuantity: number; stockStatus: 'low' | 'out' }> };
+    const empty = { deducted: [] as Array<{ itemId: string; name: string; quantity: number }>, unmatched: [] as string[], withoutRecipe: [] as string[], alerts: [] as Array<{ id: string; name: string; currentQuantity: number; minQuantity: number; stockStatus: 'low' | 'out' }> };
     const [order] = await this.db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) return empty;
-    await this.syncCatalogProducts();
     const lines = await this.db
       .select({
         productId: orderItems.productId,
@@ -360,7 +355,7 @@ export class CrmStockService extends CrmBaseService {
       })
       .from(orderItems)
       .where(eq(orderItems.orderId, orderId));
-    const { needed, unmatched } = await this.salesNeeds(lines);
+    const { needed, unmatched, withoutRecipe } = await this.salesNeeds(lines);
     const actorName = await this.actorName(user);
     const items = await this.db.select().from(stockItems);
     const names = new Map(items.map((item) => [item.id, item.name]));
@@ -394,7 +389,7 @@ export class CrmStockService extends CrmBaseService {
       }
     }
     const alerts = await this.alertsFor(items, [...needed.keys()]);
-    return { deducted, unmatched, alerts };
+    return { deducted, unmatched, withoutRecipe, alerts };
   }
 
   async reverseOrderSale(orderId: string, user?: Actor) {
@@ -448,6 +443,7 @@ export class CrmStockService extends CrmBaseService {
     const recipeByOutput = new Map(activeRecipes.map((recipe) => [recipe.outputItemId, recipe]));
     const needed = new Map<string, number>();
     const unmatched: string[] = [];
+    const withoutRecipe: string[] = [];
     for (const line of lines) {
       const match = this.matchStockItem(items, line);
       if (!match) {
@@ -456,7 +452,7 @@ export class CrmStockService extends CrmBaseService {
       }
       const recipe = recipeByOutput.get(match.id);
       if (!recipe) {
-        needed.set(match.id, (needed.get(match.id) || 0) + line.quantity);
+        withoutRecipe.push(match.name);
         continue;
       }
       for (const component of recipeLines.filter((row) => row.recipeId === recipe.id)) {
@@ -464,7 +460,7 @@ export class CrmStockService extends CrmBaseService {
         needed.set(component.componentItemId, (needed.get(component.componentItemId) || 0) + add);
       }
     }
-    return { needed, unmatched };
+    return { needed, unmatched, withoutRecipe };
   }
 
   private matchStockItem(
@@ -741,86 +737,6 @@ export class CrmStockService extends CrmBaseService {
       createdAt: row.createdAt?.toISOString?.() ?? new Date().toISOString(),
       cancelledAt: row.cancelledAt?.toISOString?.() ?? null,
     };
-  }
-
-  private async syncCatalogProducts() {
-    const catalog = await this.db
-      .select({
-        id: products.id,
-        name: products.name,
-        categoryName: categories.name,
-        active: products.isActive,
-      })
-      .from(products)
-      .leftJoin(categories, eq(products.categoryId, categories.id));
-    const existing = await this.db.select().from(stockItems);
-    const byCatalog = new Map(
-      existing
-        .filter((item) => item.catalogProductId)
-        .map((item) => [item.catalogProductId as string, item]),
-    );
-
-    for (const product of catalog) {
-      const name = product.name.trim() || 'Produit';
-      const category = product.categoryName || '';
-      const linked = byCatalog.get(product.id);
-      if (linked) {
-        const nextName = this.availableName(name, linked.id, existing);
-        if (linked.name !== nextName || linked.category !== category || linked.active !== product.active) {
-          await this.db.update(stockItems).set({
-            name: nextName,
-            category,
-            active: product.active,
-            updatedAt: new Date(),
-          }).where(eq(stockItems.id, linked.id));
-          linked.name = nextName;
-          linked.category = category;
-          linked.active = product.active;
-        }
-        continue;
-      }
-
-      const sameName = existing.find((item) => !item.catalogProductId && this.norm(item.name) === this.norm(name));
-      if (sameName) {
-        await this.db.update(stockItems).set({
-          catalogProductId: product.id,
-          name,
-          category,
-          active: product.active,
-          updatedAt: new Date(),
-        }).where(eq(stockItems.id, sameName.id));
-        sameName.catalogProductId = product.id;
-        sameName.name = name;
-        sameName.category = category;
-        sameName.active = product.active;
-        byCatalog.set(product.id, sameName);
-        continue;
-      }
-
-      const [created] = await this.db.insert(stockItems).values({
-        name: this.availableName(name, null, existing),
-        category,
-        itemType: 'produit_fini',
-        catalogProductId: product.id,
-        active: product.active,
-      }).returning();
-      existing.push(created);
-      byCatalog.set(product.id, created);
-    }
-  }
-
-  private availableName(
-    name: string,
-    selfId: string | null,
-    existing: Array<typeof stockItems.$inferSelect>,
-  ) {
-    const taken = (candidate: string) => existing.some(
-      (item) => item.id !== selfId && this.norm(item.name) === this.norm(candidate),
-    );
-    if (!taken(name)) return name;
-    let index = 2;
-    while (taken(`${name} ${index}`)) index += 1;
-    return `${name} ${index}`;
   }
 
   private stockStatus(quantity: number, minQuantity: number): StockStatus {
