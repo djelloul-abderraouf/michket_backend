@@ -44,6 +44,12 @@ export class CreateStockItemDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @IsNumber()
+  @Min(0)
+  initialQuantity?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsUUID()
   catalogProductId?: string | null;
 }

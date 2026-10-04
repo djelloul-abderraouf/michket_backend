@@ -55,10 +55,17 @@ export class CrmStockService extends CrmBaseService {
     return items.map((item) => this.mapItem(item, balances.get(item.id) ?? 0));
   }
 
-  async createItem(dto: CreateStockItemDto) {
+  async createItem(dto: CreateStockItemDto, user?: Actor) {
     const name = dto.name.trim();
     if (!name) {
       throw new BadRequestException('Le nom est obligatoire.');
+    }
+    const existing = await this.db.select({ id: stockItems.id, name: stockItems.name, catalogProductId: stockItems.catalogProductId }).from(stockItems);
+    if (existing.some((item) => this.norm(item.name) === this.norm(name))) {
+      throw new BadRequestException('Un article porte déjà ce nom.');
+    }
+    if (dto.catalogProductId && existing.some((item) => item.catalogProductId === dto.catalogProductId)) {
+      throw new BadRequestException('Ce produit du catalogue est déjà lié à un article.');
     }
     const [created] = await this.db.insert(stockItems).values({
       name,
@@ -68,7 +75,16 @@ export class CrmStockService extends CrmBaseService {
       minQuantity: this.qty(dto.minQuantity ?? 0),
       catalogProductId: dto.catalogProductId || null,
     }).returning();
-    return this.mapItem(created, 0);
+    const opening = Number(dto.initialQuantity || 0);
+    if (opening > 0) {
+      await this.createManualMovement({
+        itemId: created.id,
+        movementType: 'restock',
+        quantity: opening,
+        note: 'Quantité initiale',
+      }, user);
+    }
+    return this.mapItem(created, opening > 0 ? opening : 0);
   }
 
   async updateItem(id: string, dto: UpdateStockItemDto) {

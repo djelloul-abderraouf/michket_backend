@@ -42,8 +42,11 @@ export class CrmStockController {
 
   @Post('items')
   @CrmRoles(...editors)
-  createItem(@Body() dto: CreateStockItemDto) {
-    return this.stock.createItem(dto);
+  createItem(
+    @Body() dto: CreateStockItemDto,
+    @CurrentCrmUser() user: { id: string; firstName?: string; lastName?: string; email?: string },
+  ) {
+    return this.stock.createItem(dto, user);
   }
 
   @Put('items/:id')
