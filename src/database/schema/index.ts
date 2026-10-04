@@ -54,3 +54,11 @@ export {
   crmActivities,
   crmLoginAudit,
 } from './crm-tables';
+
+export {
+  stockItems,
+  stockMovements,
+  stockRecipes,
+  stockRecipeLines,
+  stockManufacturingOrders,
+} from './crm-stock';

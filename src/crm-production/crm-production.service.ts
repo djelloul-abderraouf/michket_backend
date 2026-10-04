@@ -271,14 +271,14 @@ export class CrmProductionService extends CrmBaseService {
         role: row.role,
         staffRoles: row.staffRoles,
       });
-      if (roles.includes('confirmation')) {
+      if (roles.includes('commercial')) {
         needsRead.add(row.orderId);
       }
     }
     const readIds = new Set(dto.readOrderIds || []);
     if ([...needsRead].some((orderId) => orderIds.includes(orderId) && !readIds.has(orderId))) {
       throw new BadRequestException(
-        'Confirmez avoir lu les remarques de confirmation avant d’ajouter la commande à la planche.',
+        'Confirmez avoir lu les remarques du commercial avant d’ajouter la commande à la planche.',
       );
     }
 

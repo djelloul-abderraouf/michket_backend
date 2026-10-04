@@ -49,6 +49,7 @@ import { assertCanChangeOrderStatus } from '../crm-base/order-access';
 import { assignedStaffRoles } from '../auth/crm-role-map';
 import { CreateCrmOrderDto } from './dto/crm-orders.dto';
 import { CrmDeliveryService } from '../crm-delivery/crm-delivery.service';
+import { CrmStockService } from '../crm-stock/crm-stock.service';
 import { extractYalidineStatus } from '../crm-delivery/yalidine-status';
 
 type CrmUserContext = {
@@ -91,6 +92,7 @@ export class CrmOrdersService extends CrmBaseService {
     db: NodePgDatabase<typeof schema>,
     @Inject(forwardRef(() => CrmDeliveryService))
     private readonly crmDeliveryService: CrmDeliveryService,
+    private readonly crmStockService: CrmStockService,
   ) {
     super(db);
   }
@@ -104,7 +106,7 @@ export class CrmOrdersService extends CrmBaseService {
     limit?: number;
   }) {
     const page = Math.max(1, filters.page || 1);
-    const limit = Math.min(100, Math.max(1, filters.limit || 50));
+    const limit = Math.min(200, Math.max(1, filters.limit || 50));
     const offset = (page - 1) * limit;
 
     const conditions = [];
@@ -270,6 +272,30 @@ export class CrmOrdersService extends CrmBaseService {
       .set(updateData)
       .where(eq(orders.id, id))
       .returning();
+
+    const wasInFlow = this.crmStockService.isInFulfillment(order.status);
+    const nowInFlow = this.crmStockService.isInFulfillment(dbStatus);
+    if (order.status !== dbStatus && !wasInFlow && nowInFlow) {
+      try {
+        await this.crmStockService.applyOrderSale(id, user);
+      } catch (error) {
+        this.logger.warn(
+          `Stock sale failed for order ${id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    } else if (order.status !== dbStatus && wasInFlow && !nowInFlow) {
+      try {
+        await this.crmStockService.reverseOrderSale(id, user);
+      } catch (error) {
+        this.logger.warn(
+          `Stock sale reversal failed for order ${id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
 
     if (dbStatus === 'confirmed' && !options?.skipParcel) {
       try {

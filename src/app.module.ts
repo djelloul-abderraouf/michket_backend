@@ -28,6 +28,7 @@ import { CrmOrdersModule } from './crm-orders/crm-orders.module';
 import { CrmUsersModule } from './crm-users/crm-users.module';
 import { CrmCatalogModule } from './crm-catalog/crm-catalog.module';
 import { CrmDeliveryModule } from './crm-delivery/crm-delivery.module';
+import { CrmStockModule } from './crm-stock/crm-stock.module';
 // import { QueueModule } from './queue/queue.module'; // Temporarily disabled due to Redis issues
 
 @Module({
@@ -65,6 +66,7 @@ import { CrmDeliveryModule } from './crm-delivery/crm-delivery.module';
     CrmUsersModule,
     CrmCatalogModule,
     CrmDeliveryModule,
+    CrmStockModule,
   ],
 })
 export class AppModule {}
