@@ -275,9 +275,10 @@ export class CrmOrdersService extends CrmBaseService {
 
     const wasInFlow = this.crmStockService.isInFulfillment(order.status);
     const nowInFlow = this.crmStockService.isInFulfillment(dbStatus);
+    let stockNotice: Awaited<ReturnType<CrmStockService['applyOrderSale']>> | null = null;
     if (order.status !== dbStatus && !wasInFlow && nowInFlow) {
       try {
-        await this.crmStockService.applyOrderSale(id, user);
+        stockNotice = await this.crmStockService.applyOrderSale(id, user);
       } catch (error) {
         this.logger.warn(
           `Stock sale failed for order ${id}: ${
@@ -299,7 +300,8 @@ export class CrmOrdersService extends CrmBaseService {
 
     if (dbStatus === 'confirmed' && !options?.skipParcel) {
       try {
-        return await this.crmDeliveryService.createYalidineParcel(id, user);
+        const parcel = await this.crmDeliveryService.createYalidineParcel(id, user);
+        return stockNotice ? { ...parcel, stockNotice } : parcel;
       } catch (error) {
         this.logger.warn(
           `Yalidine auto-create failed for order ${id}: ${
@@ -310,7 +312,7 @@ export class CrmOrdersService extends CrmBaseService {
     }
 
     const [mapped] = await this.attachOrderDetails([updatedOrder]);
-    return mapped;
+    return stockNotice ? { ...mapped, stockNotice } : mapped;
   }
 
   async lookupClientByPhone(phone: string) {

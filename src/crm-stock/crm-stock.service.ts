@@ -342,19 +342,23 @@ export class CrmStockService extends CrmBaseService {
   }
 
   async applyOrderSale(orderId: string, user?: Actor) {
+    const empty = { deducted: [] as Array<{ itemId: string; name: string; quantity: number }>, unmatched: [] as string[], alerts: [] as Array<{ id: string; name: string; currentQuantity: number; minQuantity: number; stockStatus: 'low' | 'out' }> };
     const [order] = await this.db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
-    if (!order) return;
+    if (!order) return empty;
     const lines = await this.db
       .select({
         productId: orderItems.productId,
         productName: orderItems.productName,
+        variantName: orderItems.variantName,
+        colorName: orderItems.colorName,
         quantity: orderItems.quantity,
       })
       .from(orderItems)
       .where(eq(orderItems.orderId, orderId));
-    const needed = await this.salesNeeds(lines);
-    if (needed.size === 0) return;
+    const { needed, unmatched } = await this.salesNeeds(lines);
     const actorName = await this.actorName(user);
+    const items = await this.db.select().from(stockItems);
+    const names = new Map(items.map((item) => [item.id, item.name]));
     const existing = await this.db
       .select()
       .from(stockMovements)
@@ -364,10 +368,11 @@ export class CrmStockService extends CrmBaseService {
         eq(stockMovements.movementType, 'sale'),
       ));
     const reversed = await this.reversedIds(existing.map((movement) => movement.id));
+    const deducted: Array<{ itemId: string; name: string; quantity: number }> = [];
     for (const [itemId, quantity] of needed) {
       const sales = existing.filter((movement) => movement.itemId === itemId);
       if (sales.some((movement) => !reversed.has(movement.id))) continue;
-      await this.insertMovement(this.db, {
+      const created = await this.insertMovement(this.db, {
         itemId,
         movementType: 'sale',
         delta: -quantity,
@@ -379,7 +384,12 @@ export class CrmStockService extends CrmBaseService {
         user,
         actorName,
       });
+      if (created) {
+        deducted.push({ itemId, name: names.get(itemId) || 'Article', quantity: this.round(quantity) });
+      }
     }
+    const alerts = await this.alertsFor(items, [...needed.keys()]);
+    return { deducted, unmatched, alerts };
   }
 
   async reverseOrderSale(orderId: string, user?: Actor) {
@@ -416,7 +426,13 @@ export class CrmStockService extends CrmBaseService {
     return IN_FLOW.has(dbStatus);
   }
 
-  private async salesNeeds(lines: Array<{ productId: string | null; productName: string; quantity: number }>) {
+  private async salesNeeds(lines: Array<{
+    productId: string | null;
+    productName: string;
+    variantName?: string | null;
+    colorName?: string | null;
+    quantity: number;
+  }>) {
     const items = await this.db.select().from(stockItems);
     const recipes = await this.db.select().from(stockRecipes).where(eq(stockRecipes.kind, 'sales'));
     const activeRecipes = recipes.filter((recipe) => recipe.active);
@@ -426,20 +442,87 @@ export class CrmStockService extends CrmBaseService {
       : [];
     const recipeByOutput = new Map(activeRecipes.map((recipe) => [recipe.outputItemId, recipe]));
     const needed = new Map<string, number>();
+    const unmatched: string[] = [];
     for (const line of lines) {
-      const match = items.find((item) =>
-        (line.productId && item.catalogProductId === line.productId)
-        || item.name.trim().toLowerCase() === line.productName.trim().toLowerCase(),
-      );
-      if (!match) continue;
+      const match = this.matchStockItem(items, line);
+      if (!match) {
+        unmatched.push(this.lineLabel(line));
+        continue;
+      }
       const recipe = recipeByOutput.get(match.id);
-      if (!recipe) continue;
+      if (!recipe) {
+        needed.set(match.id, (needed.get(match.id) || 0) + line.quantity);
+        continue;
+      }
       for (const component of recipeLines.filter((row) => row.recipeId === recipe.id)) {
         const add = this.num(component.quantityPerUnit) * line.quantity;
         needed.set(component.componentItemId, (needed.get(component.componentItemId) || 0) + add);
       }
     }
-    return needed;
+    return { needed, unmatched };
+  }
+
+  private matchStockItem(
+    items: Array<typeof stockItems.$inferSelect>,
+    line: { productId: string | null; productName: string; variantName?: string | null; colorName?: string | null },
+  ) {
+    const active = items.filter((item) => item.active);
+    return this.matchAmong(active, line) ?? this.matchAmong(items, line);
+  }
+
+  private matchAmong(
+    items: Array<typeof stockItems.$inferSelect>,
+    line: { productId: string | null; productName: string; variantName?: string | null; colorName?: string | null },
+  ) {
+    const linked = line.productId
+      ? items.filter((item) => item.catalogProductId === line.productId)
+      : [];
+    const pool = linked.length > 0 ? linked : items;
+    const byName = this.pickByName(pool, line);
+    if (byName) return byName;
+    return linked.length === 1 ? linked[0] : null;
+  }
+
+  private pickByName(
+    items: Array<typeof stockItems.$inferSelect>,
+    line: { productName: string; variantName?: string | null; colorName?: string | null },
+  ) {
+    const candidates = new Set(
+      [
+        line.productName,
+        [line.productName, line.colorName].filter(Boolean).join(' '),
+        [line.productName, line.variantName].filter(Boolean).join(' '),
+        [line.colorName, line.productName].filter(Boolean).join(' '),
+      ].map((value) => this.norm(value)).filter(Boolean),
+    );
+    return items.find((item) => candidates.has(this.norm(item.name))) ?? null;
+  }
+
+  private lineLabel(line: { productName: string; colorName?: string | null }) {
+    return [line.productName, line.colorName].filter(Boolean).join(' ');
+  }
+
+  private norm(value: string) {
+    return value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private async alertsFor(items: Array<typeof stockItems.$inferSelect>, itemIds: string[]) {
+    if (itemIds.length === 0) return [];
+    const balances = await this.balances();
+    return itemIds.flatMap((itemId) => {
+      const item = items.find((row) => row.id === itemId);
+      if (!item || !item.active) return [];
+      const current = this.round(balances.get(itemId) ?? 0);
+      const minQuantity = this.num(item.minQuantity);
+      const stockStatus = this.stockStatus(current, minQuantity);
+      if (stockStatus === 'ok') return [];
+      return [{ id: item.id, name: item.name, currentQuantity: current, minQuantity, stockStatus }];
+    });
   }
 
   private async requirementLines(kind: 'manufacturing' | 'sales', outputItemId: string, quantity: number) {
@@ -657,7 +740,8 @@ export class CrmStockService extends CrmBaseService {
 
   private stockStatus(quantity: number, minQuantity: number): StockStatus {
     if (quantity <= 0) return 'out';
-    if (quantity <= minQuantity) return 'low';
+    const warningAt = minQuantity > 0 ? minQuantity : 1;
+    if (quantity <= warningAt) return 'low';
     return 'ok';
   }
 
