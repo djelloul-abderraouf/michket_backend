@@ -19,7 +19,6 @@ import { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
   createHash,
   createHmac,
-  randomBytes,
   timingSafeEqual,
 } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
@@ -681,7 +680,7 @@ export class OrdersService {
       deliveryFeeCents: number;
     },
   ): Promise<CreateOrderResponse> {
-    const reference = this.generateReference();
+    const reference = await this.generateReference(tx);
 
     const guestAccessToken = orderData.userId
       ? undefined
@@ -1205,16 +1204,31 @@ export class OrdersService {
       .join(',')}}`;
   }
 
-  private generateReference(): string {
-    const timePart = Date.now()
-      .toString(36)
-      .toUpperCase();
+  private async generateReference(tx: DbTransaction) {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Africa/Algiers',
+      year: '2-digit',
+      month: '2-digit',
+    }).formatToParts(new Date());
 
-    const randomPart = randomBytes(5)
-      .toString('hex')
-      .toUpperCase();
+    const year = parts.find((part) => part.type === 'year')?.value ?? '00';
+    const month = parts.find((part) => part.type === 'month')?.value ?? '01';
+    const prefix = `${year}-${month}`;
 
-    return `MICH-${timePart}-${randomPart}`;
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtext(${`michket-order-ref-${prefix}`}))`,
+    );
+
+    const [row] = await tx
+      .select({
+        lastNumber: sql<number>`coalesce(max(substring(${orders.reference} from '[0-9]+$')::int), 0)::int`,
+      })
+      .from(orders)
+      .where(sql`${orders.reference} ~ ${`^${prefix}-[0-9]+$`}`);
+
+    const next = (row?.lastNumber ?? 0) + 1;
+
+    return `${prefix}-${String(next).padStart(2, '0')}`;
   }
 
   private sanitizeOrder(
