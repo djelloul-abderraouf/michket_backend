@@ -21,6 +21,7 @@ import {
   crmProductionJobs,
   orderItems,
   orders,
+  users,
 } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { CrmBaseService } from '../crm-base/crm-base.service';
@@ -39,6 +40,7 @@ type PlancheActor = {
   email?: string;
   firstName?: string;
   lastName?: string;
+  roles?: string[];
 };
 
 @Injectable()
@@ -129,6 +131,7 @@ export class CrmProductionService extends CrmBaseService {
   }
 
   async listPlanches() {
+    await this.syncPlancheOrderStatuses();
     const boards = await this.db
       .select()
       .from(crmPlanches)
@@ -141,7 +144,7 @@ export class CrmProductionService extends CrmBaseService {
     user?: PlancheActor,
   ) {
     const capacity = this.assertCapacity(dto.capacity);
-    const actorName = this.personName(user);
+    const actorName = await this.resolveActorName(user);
 
     const [board] = await this.db
       .insert(crmPlanches)
@@ -247,6 +250,9 @@ export class CrmProductionService extends CrmBaseService {
     if (orderRows.some((order) => order.status !== 'confirmed')) {
       throw new BadRequestException('Seules les commandes confirmées peuvent entrer sur une planche.');
     }
+    if (!user?.id) {
+      throw new ForbiddenException('Utilisateur requis');
+    }
 
     await this.db.insert(crmPlancheOrders).values(
       orderIds.map((orderId) => ({
@@ -255,6 +261,13 @@ export class CrmProductionService extends CrmBaseService {
         orderId,
       })),
     );
+    const actor = { id: user.id, roles: user.roles };
+    const note = `Planche ${board.reference}`;
+    for (const orderId of orderIds) {
+      await this.crmOrdersService.updateStatus(orderId, 'en_fabrication', note, actor, {
+        historyOnly: true,
+      });
+    }
     await this.recordPlancheEvent({
       plancheId,
       action: 'orders_added',
@@ -282,6 +295,9 @@ export class CrmProductionService extends CrmBaseService {
       .returning({ id: crmPlancheOrders.id });
     if (removed.length === 0) {
       throw new BadRequestException('Cette commande n’est pas sur la planche.');
+    }
+    if (user?.id) {
+      await this.restoreConfirmedOrder(orderId, { id: user.id, roles: user.roles });
     }
     await this.recordPlancheEvent({
       plancheId,
@@ -363,13 +379,43 @@ export class CrmProductionService extends CrmBaseService {
 
     if (plancheStatus === 'lancee') {
       if (order.status === 'confirmed') {
-        await this.crmOrdersService.updateStatus(orderId, 'en_fabrication', note, user);
+        await this.crmOrdersService.updateStatus(orderId, 'en_fabrication', note, user, {
+          historyOnly: true,
+        });
       }
       return;
     }
 
     if (order.status === 'confirmed') {
-      await this.crmOrdersService.updateStatus(orderId, 'en_fabrication', note, user);
+      await this.crmOrdersService.updateStatus(orderId, 'en_fabrication', note, user, {
+        historyOnly: true,
+      });
+    }
+    const jobs = await this.db
+      .select({ status: crmProductionJobs.status })
+      .from(crmProductionJobs)
+      .where(eq(crmProductionJobs.orderId, orderId));
+    if (jobs.length === 0) {
+      const [current] = await this.db
+        .select({ status: orders.status })
+        .from(orders)
+        .where(eq(orders.id, orderId))
+        .limit(1);
+      if (current?.status === 'processing') {
+        await this.crmOrdersService.updateStatus(orderId, 'en_fabrication', note, user, {
+          historyOnly: true,
+        });
+      }
+    }
+    const freshJobs = jobs.length === 0
+      ? await this.db
+          .select({ status: crmProductionJobs.status })
+          .from(crmProductionJobs)
+          .where(eq(crmProductionJobs.orderId, orderId))
+      : jobs;
+    const complete = freshJobs.length > 0 && freshJobs.every((job) => job.status === 'termine');
+    if (complete) {
+      return;
     }
     const [fresh] = await this.db
       .select({ status: orders.status })
@@ -377,8 +423,36 @@ export class CrmProductionService extends CrmBaseService {
       .where(eq(orders.id, orderId))
       .limit(1);
     if (fresh?.status === 'processing') {
-      await this.crmOrdersService.updateStatus(orderId, 'en_preparation', note, user);
+      await this.crmOrdersService.updateStatus(orderId, 'en_preparation', note, user, {
+        historyOnly: true,
+      });
     }
+  }
+
+  private async restoreConfirmedOrder(
+    orderId: string,
+    user: { id: string; roles?: string[] },
+  ) {
+    const [order] = await this.db
+      .select({ status: orders.status })
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .limit(1);
+    if (order?.status !== 'processing') {
+      return;
+    }
+    const jobs = await this.db
+      .select({ status: crmProductionJobs.status })
+      .from(crmProductionJobs)
+      .where(eq(crmProductionJobs.orderId, orderId));
+    const complete = jobs.length > 0 && jobs.every((job) => job.status === 'termine');
+    if (complete) {
+      return;
+    }
+    await this.crmOrdersService.updateStatus(orderId, 'confirme', 'Retirée de la planche', user, {
+      historyOnly: true,
+      skipParcel: true,
+    });
   }
 
   private async findPlanche(id: string) {
@@ -429,16 +503,51 @@ export class CrmProductionService extends CrmBaseService {
           .where(inArray(orderItems.orderId, orderIds))
       : [];
 
+    const personIds = [
+      ...new Set(
+        [
+          ...eventRows.map((event) => event.actorId),
+          ...boardRows.map((board) => board.createdBy),
+        ].filter((id): id is string => Boolean(id)),
+      ),
+    ];
+    const personRows = personIds.length
+      ? await this.db
+          .select({
+            id: users.id,
+            firstName: users.firstName,
+            lastName: users.lastName,
+          })
+          .from(users)
+          .where(inArray(users.id, personIds))
+      : [];
+    const personNames = new Map(
+      personRows.map((person) => [
+        person.id,
+        `${person.firstName || ''} ${person.lastName || ''}`.trim(),
+      ]),
+    );
+    const displayName = (id?: string | null, stored?: string | null) => {
+      const fromUser = id ? personNames.get(id) : '';
+      if (fromUser) {
+        return fromUser;
+      }
+      if (stored && !stored.includes('@')) {
+        return stored;
+      }
+      return 'Équipe';
+    };
+
     return boardRows.map((board) => ({
       id: board.id,
       reference: board.reference,
       capacity: board.capacity,
       status: board.status,
-      createdByName: board.createdByName,
+      createdByName: displayName(board.createdBy, board.createdByName),
       launchedAt: this.toIso(board.launchedAt) ?? null,
       finishedAt: this.toIso(board.finishedAt) ?? null,
       createdAt: this.toIso(board.createdAt) ?? new Date().toISOString(),
-      events: this.plancheEventsFor(board, eventRows),
+      events: this.plancheEventsFor(board, eventRows, personNames),
       orders: links
         .filter((link) => link.plancheId === board.id)
         .map((link) => {
@@ -496,14 +605,25 @@ export class CrmProductionService extends CrmBaseService {
       toStatus: input.toStatus ?? null,
       note: input.note ?? null,
       actorId: input.user?.id || null,
-      actorName: input.actorName || this.personName(input.user) || 'Équipe',
+      actorName: input.actorName || (await this.resolveActorName(input.user)),
     });
   }
 
   private plancheEventsFor(
     board: typeof crmPlanches.$inferSelect,
     eventRows: Array<typeof crmPlancheEvents.$inferSelect>,
+    personNames: Map<string, string>,
   ) {
+    const label = (id?: string | null, stored?: string | null) => {
+      const fromUser = id ? personNames.get(id) : '';
+      if (fromUser) {
+        return fromUser;
+      }
+      if (stored && !stored.includes('@')) {
+        return stored;
+      }
+      return 'Équipe';
+    };
     const events = eventRows
       .filter((event) => event.plancheId === board.id)
       .map((event) => ({
@@ -512,7 +632,7 @@ export class CrmProductionService extends CrmBaseService {
         fromStatus: event.fromStatus,
         toStatus: event.toStatus,
         note: event.note,
-        actorName: event.actorName,
+        actorName: label(event.actorId, event.actorName),
         createdAt: this.toIso(event.createdAt) ?? new Date().toISOString(),
       }));
 
@@ -527,7 +647,7 @@ export class CrmProductionService extends CrmBaseService {
         fromStatus: null,
         toStatus: 'en_attente',
         note: `Capacité ${board.capacity}`,
-        actorName: board.createdByName || 'Équipe',
+        actorName: label(board.createdBy, board.createdByName),
         createdAt: this.toIso(board.createdAt) ?? new Date().toISOString(),
       },
     ];
@@ -535,7 +655,110 @@ export class CrmProductionService extends CrmBaseService {
 
   private personName(user?: PlancheActor) {
     const name = `${user?.firstName || ''} ${user?.lastName || ''}`.trim();
-    return name || user?.email || null;
+    return name || null;
+  }
+
+  private async resolveActorName(user?: PlancheActor) {
+    const direct = this.personName(user);
+    if (direct && !direct.includes('@')) {
+      return direct;
+    }
+    if (!user?.id) {
+      return 'Équipe';
+    }
+    const [row] = await this.db
+      .select({ firstName: users.firstName, lastName: users.lastName })
+      .from(users)
+      .where(eq(users.id, user.id))
+      .limit(1);
+    const fromDb = `${row?.firstName || ''} ${row?.lastName || ''}`.trim();
+    return fromDb || 'Équipe';
+  }
+
+  private async syncPlancheOrderStatuses() {
+    const rows = await this.db
+      .select({
+        orderId: crmPlancheOrders.orderId,
+        plancheStatus: crmPlanches.status,
+        reference: crmPlanches.reference,
+        createdBy: crmPlanches.createdBy,
+        orderStatus: orders.status,
+      })
+      .from(crmPlancheOrders)
+      .innerJoin(crmPlanches, eq(crmPlancheOrders.plancheId, crmPlanches.id))
+      .innerJoin(orders, eq(crmPlancheOrders.orderId, orders.id));
+
+    const processingIds = [
+      ...new Set(
+        rows
+          .filter((row) => row.orderStatus === 'processing')
+          .map((row) => row.orderId),
+      ),
+    ];
+    const jobRows = processingIds.length
+      ? await this.db
+          .select({
+            orderId: crmProductionJobs.orderId,
+            status: crmProductionJobs.status,
+          })
+          .from(crmProductionJobs)
+          .where(inArray(crmProductionJobs.orderId, processingIds))
+      : [];
+    const jobsByOrder = new Map<string, string[]>();
+    for (const job of jobRows) {
+      const current = jobsByOrder.get(job.orderId) || [];
+      current.push(job.status);
+      jobsByOrder.set(job.orderId, current);
+    }
+    const alreadyPrepared = new Set(
+      [...jobsByOrder.entries()]
+        .filter(([, statuses]) => statuses.length > 0 && statuses.every((status) => status === 'termine'))
+        .map(([orderId]) => orderId),
+    );
+
+    const mismatched = rows.filter((row) => {
+      if (row.orderStatus === 'cancelled' || row.orderStatus === 'refunded' || row.orderStatus === 'shipped' || row.orderStatus === 'delivered') {
+        return false;
+      }
+      if (row.plancheStatus === 'terminee') {
+        if (alreadyPrepared.has(row.orderId)) {
+          return false;
+        }
+        return row.orderStatus === 'confirmed' || row.orderStatus === 'processing';
+      }
+      return row.orderStatus === 'confirmed';
+    });
+    if (mismatched.length === 0) {
+      return;
+    }
+
+    let fallbackId: string | undefined;
+    for (const row of mismatched) {
+      let actorId = row.createdBy || undefined;
+      if (!actorId) {
+        if (!fallbackId) {
+          const [admin] = await this.db
+            .select({ id: users.id })
+            .from(users)
+            .where(eq(users.role, 'admin'))
+            .limit(1);
+          fallbackId = admin?.id;
+        }
+        actorId = fallbackId;
+      }
+      if (!actorId) {
+        continue;
+      }
+      const actor = { id: actorId, roles: ['fabrication'] };
+      const note = `Planche ${row.reference}`;
+      if (row.plancheStatus === 'terminee') {
+        await this.movePlancheOrder(row.orderId, 'terminee', note, actor);
+      } else if (row.orderStatus === 'confirmed') {
+        await this.crmOrdersService.updateStatus(row.orderId, 'en_fabrication', note, actor, {
+          historyOnly: true,
+        });
+      }
+    }
   }
 
   private serialize(job: any) {

@@ -4,6 +4,7 @@ const TRANSITION_ROLES: Record<string, string[]> = {
   'pas_confirme:confirme': ['admin', 'confirmation', 'commercial'],
   'pas_confirme:annulee': ['admin', 'confirmation', 'commercial'],
   'confirme:en_fabrication': ['admin', 'fabrication', 'preparation', 'commercial'],
+  'en_fabrication:confirme': ['admin', 'fabrication'],
   'confirme:annulee': ['admin', 'confirmation', 'commercial', 'fabrication', 'preparation'],
   'en_fabrication:en_preparation': ['admin', 'fabrication', 'preparation', 'commercial'],
   'en_fabrication:annulee': ['admin', 'fabrication', 'preparation', 'commercial'],

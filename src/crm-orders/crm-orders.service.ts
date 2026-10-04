@@ -187,6 +187,7 @@ export class CrmOrdersService extends CrmBaseService {
     newStatus: string,
     note?: string,
     user?: CrmUserContext,
+    options?: { historyOnly?: boolean; skipParcel?: boolean },
   ) {
     const [order] = await this.db
       .select()
@@ -233,7 +234,7 @@ export class CrmOrdersService extends CrmBaseService {
       updatedAt: new Date(),
     };
 
-    if (note) {
+    if (note && !options?.historyOnly) {
       updateData.notes = order.notes
         ? `${order.notes}\n${note}`
         : note;
@@ -269,7 +270,7 @@ export class CrmOrdersService extends CrmBaseService {
       .where(eq(orders.id, id))
       .returning();
 
-    if (dbStatus === 'confirmed') {
+    if (dbStatus === 'confirmed' && !options?.skipParcel) {
       try {
         return await this.crmDeliveryService.createYalidineParcel(id, user);
       } catch (error) {
@@ -835,7 +836,7 @@ export class CrmOrdersService extends CrmBaseService {
       authorRows.map((author) => [
         author.id,
         `${author.firstName || ''} ${author.lastName || ''}`.trim() ||
-          author.email,
+          'Équipe',
       ]),
     );
 
