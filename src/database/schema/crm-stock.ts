@@ -46,6 +46,7 @@ export const stockItems = pgTable('crm_stock_items', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   uniqueIndex('crm_stock_items_name_unique').on(table.name),
+  uniqueIndex('crm_stock_items_catalog_product_unique').on(table.catalogProductId),
   index('crm_stock_items_type_idx').on(table.itemType),
 ]);
 

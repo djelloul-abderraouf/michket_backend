@@ -28,6 +28,8 @@ import { DATABASE_CONNECTION } from '../database/database.module';
 import { CrmBaseService } from '../crm-base/crm-base.service';
 import { CrmOrdersService } from '../crm-orders/crm-orders.service';
 import { assignedStaffRoles } from '../auth/crm-role-map';
+
+const PLANCHE_MAX_ORDERS = 100;
 import {
   AddPlancheOrdersDto,
   CreateCrmPlancheDto,
@@ -145,7 +147,6 @@ export class CrmProductionService extends CrmBaseService {
     dto: CreateCrmPlancheDto,
     user?: PlancheActor,
   ) {
-    const capacity = this.assertCapacity(dto.capacity);
     const actorName = await this.resolveActorName(user);
 
     const [board] = await this.db
@@ -153,7 +154,7 @@ export class CrmProductionService extends CrmBaseService {
       .values({
         id: this.newId(),
         reference: await this.nextPlancheReference(),
-        capacity,
+        capacity: PLANCHE_MAX_ORDERS,
         status: 'en_attente',
         createdBy: user?.id || null,
         createdByName: actorName,
@@ -164,7 +165,7 @@ export class CrmProductionService extends CrmBaseService {
       plancheId: board.id,
       action: 'created',
       toStatus: 'en_attente',
-      note: `Capacité ${capacity}`,
+      note: 'Planche créée',
       user,
       actorName,
     });
@@ -225,11 +226,11 @@ export class CrmProductionService extends CrmBaseService {
       .from(crmPlancheOrders)
       .where(eq(crmPlancheOrders.plancheId, plancheId));
 
-    if (currentLinks.length + orderIds.length > board.capacity) {
-      const remaining = board.capacity - currentLinks.length;
+    if (currentLinks.length + orderIds.length > PLANCHE_MAX_ORDERS) {
+      const remaining = PLANCHE_MAX_ORDERS - currentLinks.length;
       throw new BadRequestException(
         remaining <= 0
-          ? `Cette planche est complète (${board.capacity} commandes).`
+          ? `Cette planche est complète (${PLANCHE_MAX_ORDERS} commandes).`
           : `Il reste ${remaining} place${remaining > 1 ? 's' : ''} sur cette planche.`,
       );
     }
@@ -282,13 +283,20 @@ export class CrmProductionService extends CrmBaseService {
       );
     }
 
-    await this.db.insert(crmPlancheOrders).values(
-      orderIds.map((orderId) => ({
-        id: this.newId(),
-        plancheId,
-        orderId,
-      })),
-    );
+    try {
+      await this.db.insert(crmPlancheOrders).values(
+        orderIds.map((orderId) => ({
+          id: this.newId(),
+          plancheId,
+          orderId,
+        })),
+      );
+    } catch (error) {
+      if (this.isUniqueViolation(error)) {
+        throw new BadRequestException('Une commande choisie est déjà sur une planche.');
+      }
+      throw error;
+    }
     const actor = { id: user.id, roles: user.roles };
     const note = `Planche ${board.reference}`;
     for (const orderId of orderIds) {
@@ -607,6 +615,11 @@ export class CrmProductionService extends CrmBaseService {
       }
     }
     return `PL-${String(max + 1).padStart(3, '0')}`;
+  }
+
+  private isUniqueViolation(error: unknown) {
+    const candidate = error as { code?: string; cause?: { code?: string } };
+    return candidate?.code === '23505' || candidate?.cause?.code === '23505';
   }
 
   private assertCapacity(value: number) {

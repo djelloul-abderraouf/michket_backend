@@ -76,11 +76,12 @@ export class UpdateCrmProductionJobDto {
 }
 
 export class CreateCrmPlancheDto {
-  @ApiProperty({ minimum: 1, maximum: 100 })
+  @ApiPropertyOptional({ minimum: 1, maximum: 100 })
+  @IsOptional()
   @IsInt()
   @Min(1)
   @Max(100)
-  capacity!: number;
+  capacity?: number;
 }
 
 export class UpdateCrmPlancheCapacityDto {
