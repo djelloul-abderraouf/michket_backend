@@ -373,6 +373,9 @@ export class CrmDashboardService extends CrmBaseService {
         delivered: sql<number>`count(*) filter (where ${orders.status} = 'delivered')::int`,
         pending: sql<number>`count(*) filter (where ${orders.status} = 'pending')::int`,
         confirmed: sql<number>`count(*) filter (where ${orders.status} in ('confirmed', 'processing', 'shipped', 'delivered'))::int`,
+        confirmedOnly: sql<number>`count(*) filter (where ${orders.status} = 'confirmed')::int`,
+        processing: sql<number>`count(*) filter (where ${orders.status} = 'processing')::int`,
+        shipped: sql<number>`count(*) filter (where ${orders.status} = 'shipped')::int`,
         cancelled: sql<number>`count(*) filter (where ${orders.status} in ('cancelled', 'refunded'))::int`,
         avg: sql<number>`coalesce(avg(total_cents), 0)::int`,
       })
@@ -416,6 +419,9 @@ export class CrmDashboardService extends CrmBaseService {
       orders: {
         currentMonth: periodMetrics?.count ?? 0,
         pending: periodMetrics?.pending ?? 0,
+        confirmed: periodMetrics?.confirmedOnly ?? 0,
+        processing: periodMetrics?.processing ?? 0,
+        shipped: periodMetrics?.shipped ?? 0,
         cancelled: periodMetrics?.cancelled ?? 0,
         confirmationRate:
           total > 0
