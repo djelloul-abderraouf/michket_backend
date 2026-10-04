@@ -25,6 +25,7 @@ import {
   CreateContactAttemptDto,
   CreateCrmOrderDto,
   CreateOrderRemarkDto,
+  UpdateCrmOrderDuplicateDto,
   UpdateCrmOrderKindDto,
   UpdateCrmOrderPhoneDto,
   UpdateCrmOrderStatusDto,
@@ -122,6 +123,17 @@ export class CrmOrdersController {
     return this.crmOrdersService.updateClientPhone(id, body.phone);
   }
 
+  @Put(':id/duplicate')
+  @ApiOperation({ summary: 'Mark an order unique or confirm a phone duplicate' })
+  @CrmRoles('admin', 'commercial', 'confirmation')
+  async updateDuplicate(
+    @Param('id') id: string,
+    @Body() body: UpdateCrmOrderDuplicateDto,
+    @CurrentCrmUser() crmUser: any,
+  ) {
+    return this.crmOrdersService.updateDuplicateReview(id, body.review, crmUser);
+  }
+
   @Put(':id/kind')
   @ApiOperation({ summary: 'Update the commercial order type' })
   @CrmRoles('admin', 'commercial')
@@ -134,7 +146,7 @@ export class CrmOrdersController {
 
   @Post(':id/remarks')
   @ApiOperation({ summary: 'Add a remark the author can later remove' })
-  @CrmRoles('admin', 'commercial', 'livraison', 'confirmation')
+  @CrmRoles('admin', 'commercial', 'livraison', 'confirmation', 'fabrication', 'preparation')
   async addRemark(
     @Param('id') id: string,
     @Body() body: CreateOrderRemarkDto,
@@ -145,7 +157,7 @@ export class CrmOrdersController {
 
   @Delete(':id/remarks/:remarkId')
   @ApiOperation({ summary: 'Remove a remark written by the current user' })
-  @CrmRoles('admin', 'commercial', 'livraison', 'confirmation')
+  @CrmRoles('admin', 'commercial', 'livraison', 'confirmation', 'fabrication', 'preparation')
   async deleteRemark(
     @Param('id') id: string,
     @Param('remarkId') remarkId: string,

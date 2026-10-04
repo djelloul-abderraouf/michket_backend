@@ -66,6 +66,21 @@ const ORDER_KINDS = [
   'recupe',
 ] as const;
 
+const DUPLICATE_REVIEWS = ['unique', 'verifie'] as const;
+
+function resolveDuplicateStatus(
+  previousOrderCount: number,
+  review: string | null | undefined,
+): 'unique' | 'a_verifier' | 'verifie' {
+  if (review === 'verifie') {
+    return 'verifie';
+  }
+  if (review === 'unique') {
+    return 'unique';
+  }
+  return previousOrderCount > 0 ? 'a_verifier' : 'unique';
+}
+
 @Injectable()
 export class CrmOrdersService extends CrmBaseService {
   private readonly logger = new Logger(CrmOrdersService.name);
@@ -581,6 +596,50 @@ export class CrmOrdersService extends CrmBaseService {
     return this.findById(id);
   }
 
+  async updateDuplicateReview(
+    id: string,
+    review: 'unique' | 'verifie' | 'auto',
+    user?: CrmUserContext,
+  ) {
+    if (!user?.id) {
+      throw new ForbiddenException('Utilisateur requis');
+    }
+    if (review !== 'auto' && !DUPLICATE_REVIEWS.includes(review)) {
+      throw new BadRequestException('Statut doublon invalide.');
+    }
+
+    const [order] = await this.db
+      .select({ id: orders.id })
+      .from(orders)
+      .where(eq(orders.id, id))
+      .limit(1);
+
+    if (!order) {
+      throw new NotFoundException('Order with ID ' + id + ' not found');
+    }
+
+    await this.db
+      .update(orders)
+      .set(
+        review === 'auto'
+          ? {
+              duplicateReview: null,
+              duplicateReviewedBy: null,
+              duplicateReviewedAt: null,
+              updatedAt: new Date(),
+            }
+          : {
+              duplicateReview: review,
+              duplicateReviewedBy: user.id,
+              duplicateReviewedAt: new Date(),
+              updatedAt: new Date(),
+            },
+      )
+      .where(eq(orders.id, id));
+
+    return this.findById(id);
+  }
+
   async addRemark(id: string, body: string, user?: CrmUserContext) {
     if (!user?.id) {
       throw new ForbiddenException('Utilisateur requis');
@@ -755,6 +814,7 @@ export class CrmOrdersService extends CrmBaseService {
           ...historyRows.map((row) => row.changedByUserId),
           ...remarkRows.map((row) => row.authorId),
           ...attemptRows.map((row) => row.employeeId),
+          ...orderRows.map((row) => row.duplicateReviewedBy),
         ].filter((value): value is string => Boolean(value)),
       ),
     ];
@@ -817,6 +877,9 @@ export class CrmOrdersService extends CrmBaseService {
         id: order.id,
         reference: order.reference,
         source: order.source,
+        campaignId: order.campaignId,
+        campaignSlug: order.campaignSlug,
+        campaignTitle: order.campaignTitle,
         clientName: names.clientName,
         firstName: names.firstName,
         lastName: names.lastName,
@@ -825,6 +888,16 @@ export class CrmOrdersService extends CrmBaseService {
         clientType: contact?.type ?? null,
         isExistingClient: previousOrderCount > 0,
         previousOrderCount,
+        duplicateStatus: resolveDuplicateStatus(
+          previousOrderCount,
+          order.duplicateReview,
+        ),
+        duplicateReview: order.duplicateReview ?? null,
+        duplicateReviewedById: order.duplicateReviewedBy ?? null,
+        duplicateReviewedByName: order.duplicateReviewedBy
+          ? authors.get(order.duplicateReviewedBy) ?? 'Equipe'
+          : null,
+        duplicateReviewedAt: this.toIso(order.duplicateReviewedAt),
         contactId: contact?.id ?? null,
         wilaya: order.wilayaName,
         wilayaName: order.wilayaName,

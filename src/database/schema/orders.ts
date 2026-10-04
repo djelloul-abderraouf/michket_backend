@@ -98,6 +98,18 @@ export const orders = pgTable(
     // Commercial order nature: urgent, propre, refabrication, correction, recupe.
     orderKind: text('order_kind'),
 
+    // Manual duplicate review. Null means the phone match decides the status.
+    duplicateReview: text('duplicate_review'),
+    duplicateReviewedBy: uuid('duplicate_reviewed_by').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+    duplicateReviewedAt: timestamp('duplicate_reviewed_at', { withTimezone: true }),
+
+    // Snapshot when checkout started from a public campaign page.
+    campaignId: uuid('campaign_id'),
+    campaignSlug: text('campaign_slug'),
+    campaignTitle: text('campaign_title'),
+
     // Promo snapshot.
     promoCode: text('promo_code'),
 
@@ -164,6 +176,10 @@ export const orders = pgTable(
     check(
       'orders_order_kind_valid',
       sql`${table.orderKind} IS NULL OR ${table.orderKind} IN ('urgent', 'propre', 'refabrication_0', 'correction_interne', 'recupe')`,
+    ),
+    check(
+      'orders_duplicate_review_valid',
+      sql`${table.duplicateReview} IS NULL OR ${table.duplicateReview} IN ('unique', 'verifie')`,
     ),
   ],
 );

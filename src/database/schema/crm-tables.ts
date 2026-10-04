@@ -6,7 +6,12 @@ import {
   numeric,
   jsonb,
   uuid,
+  integer,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
+
+import { users } from './users';
+import { orders } from './orders';
 
 export type CrmContactType = 'particulier' | 'professionnel';
 export type CrmDealStage =
@@ -79,6 +84,53 @@ export const crmProposals = pgTable('crm_proposals', {
   total: numeric('total').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+});
+
+export const plancheStatuses = ['en_attente', 'lancee', 'terminee'] as const;
+export type CrmPlancheStatus = (typeof plancheStatuses)[number];
+
+export const crmPlanches = pgTable('crm_planches', {
+  id: text('id').primaryKey(),
+  reference: text('reference').notNull().unique(),
+  capacity: integer('capacity').notNull(),
+  status: text('status').$type<CrmPlancheStatus>().notNull().default('en_attente'),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdByName: text('created_by_name'),
+  launchedAt: timestamp('launched_at', { withTimezone: true }),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const crmPlancheOrders = pgTable(
+  'crm_planche_orders',
+  {
+    id: text('id').primaryKey(),
+    plancheId: text('planche_id')
+      .notNull()
+      .references(() => crmPlanches.id, { onDelete: 'cascade' }),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => orders.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('crm_planche_orders_order_unique').on(table.orderId),
+  ],
+);
+
+export const crmPlancheEvents = pgTable('crm_planche_events', {
+  id: text('id').primaryKey(),
+  plancheId: text('planche_id')
+    .notNull()
+    .references(() => crmPlanches.id, { onDelete: 'cascade' }),
+  action: text('action').notNull(),
+  fromStatus: text('from_status'),
+  toStatus: text('to_status'),
+  note: text('note'),
+  actorId: uuid('actor_id').references(() => users.id, { onDelete: 'set null' }),
+  actorName: text('actor_name').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const crmProductionJobs = pgTable('crm_production_jobs', {

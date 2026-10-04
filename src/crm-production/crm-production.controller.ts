@@ -20,12 +20,17 @@ import {
 
 import { CrmProductionService } from './crm-production.service';
 import {
+  AddPlancheOrdersDto,
+  CreateCrmPlancheDto,
   CreateCrmProductionJobDto,
+  UpdateCrmPlancheCapacityDto,
+  UpdateCrmPlancheStatusDto,
   UpdateCrmProductionJobDto,
 } from './dto/crm-production.dto';
 import { CrmAuthGuard } from '../auth/guards/crm-auth.guard';
 import { CrmRolesGuard } from '../auth/guards/crm-roles.guard';
 import { CrmRoles } from '../common/decorators/roles.decorator';
+import { CurrentCrmUser } from '../common/decorators/current-crm-user.decorator';
 
 @ApiTags('CRM Production')
 @Controller('crm/production')
@@ -51,6 +56,67 @@ export class CrmProductionController {
       return this.crmProductionService.findByStatus(status);
     }
     return this.crmProductionService.findAll();
+  }
+
+  @Get('planches')
+  @ApiOperation({ summary: 'List fabrication planches' })
+  @CrmRoles('admin', 'fabrication')
+  async listPlanches() {
+    return this.crmProductionService.listPlanches();
+  }
+
+  @Post('planches')
+  @ApiOperation({ summary: 'Create a fabrication planche with a chosen capacity' })
+  @CrmRoles('admin', 'fabrication')
+  async createPlanche(
+    @Body() dto: CreateCrmPlancheDto,
+    @CurrentCrmUser() crmUser: any,
+  ) {
+    return this.crmProductionService.createPlanche(dto, crmUser);
+  }
+
+  @Post('planches/:id/orders')
+  @ApiOperation({ summary: 'Add orders to a planche' })
+  @CrmRoles('admin', 'fabrication')
+  async addPlancheOrders(
+    @Param('id') id: string,
+    @Body() dto: AddPlancheOrdersDto,
+    @CurrentCrmUser() crmUser: any,
+  ) {
+    return this.crmProductionService.addPlancheOrders(id, dto, crmUser);
+  }
+
+  @Delete('planches/:id/orders/:orderId')
+  @ApiOperation({ summary: 'Remove an order from a waiting planche' })
+  @CrmRoles('admin', 'fabrication')
+  async removePlancheOrder(
+    @Param('id') id: string,
+    @Param('orderId') orderId: string,
+    @CurrentCrmUser() crmUser: any,
+  ) {
+    return this.crmProductionService.removePlancheOrder(id, orderId, crmUser);
+  }
+
+  @Put('planches/:id/capacity')
+  @ApiOperation({ summary: 'Change how many orders a waiting planche can hold' })
+  @CrmRoles('admin', 'fabrication')
+  async updatePlancheCapacity(
+    @Param('id') id: string,
+    @Body() dto: UpdateCrmPlancheCapacityDto,
+    @CurrentCrmUser() crmUser: any,
+  ) {
+    return this.crmProductionService.updatePlancheCapacity(id, dto, crmUser);
+  }
+
+  @Put('planches/:id/status')
+  @ApiOperation({ summary: 'Launch or finish a planche' })
+  @CrmRoles('admin', 'fabrication')
+  async updatePlancheStatus(
+    @Param('id') id: string,
+    @Body() dto: UpdateCrmPlancheStatusDto,
+    @CurrentCrmUser() crmUser: any,
+  ) {
+    return this.crmProductionService.updatePlancheStatus(id, dto, crmUser);
   }
 
   @Get(':id')

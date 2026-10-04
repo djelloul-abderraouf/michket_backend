@@ -151,6 +151,12 @@ export class UpdateCrmOrderPhoneDto {
   phone!: string;
 }
 
+export class UpdateCrmOrderDuplicateDto {
+  @ApiProperty({ enum: ['unique', 'verifie', 'auto'] })
+  @IsIn(['unique', 'verifie', 'auto'])
+  review!: 'unique' | 'verifie' | 'auto';
+}
+
 export class UpdateCrmOrderKindDto {
   @ApiProperty({
     enum: ['urgent', 'propre', 'refabrication_0', 'correction_interne', 'recupe'],
