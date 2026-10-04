@@ -46,6 +46,7 @@ import { joinOrderName, splitOrderName } from '../crm-base/order-name';
 import { personalizationText, toPersonalizationJson } from '../crm-base/personalization';
 import { assertClientPhone, phoneKey } from '../crm-base/phone';
 import { assertCanChangeOrderStatus } from '../crm-base/order-access';
+import { assignedStaffRoles } from '../auth/crm-role-map';
 import { CreateCrmOrderDto } from './dto/crm-orders.dto';
 import { CrmDeliveryService } from '../crm-delivery/crm-delivery.service';
 import { extractYalidineStatus } from '../crm-delivery/yalidine-status';
@@ -827,6 +828,8 @@ export class CrmOrdersService extends CrmBaseService {
             firstName: users.firstName,
             lastName: users.lastName,
             email: users.email,
+            role: users.role,
+            staffRoles: users.staffRoles,
           })
           .from(users)
           .where(inArray(users.id, authorIds))
@@ -837,6 +840,15 @@ export class CrmOrdersService extends CrmBaseService {
         author.id,
         `${author.firstName || ''} ${author.lastName || ''}`.trim() ||
           'Équipe',
+      ]),
+    );
+    const authorRoles = new Map(
+      authorRows.map((author) => [
+        author.id,
+        assignedStaffRoles({
+          role: author.role,
+          staffRoles: author.staffRoles,
+        }),
       ]),
     );
 
@@ -942,6 +954,7 @@ export class CrmOrdersService extends CrmBaseService {
             body: remark.body,
             authorId: remark.authorId,
             authorName: authors.get(remark.authorId) ?? 'Equipe',
+            authorRoles: authorRoles.get(remark.authorId) ?? [],
             createdAt: this.toIso(remark.createdAt) ?? new Date().toISOString(),
           })),
         contactAttempts: attemptRows

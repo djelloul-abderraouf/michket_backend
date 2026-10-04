@@ -20,12 +20,14 @@ import {
   crmPlanches,
   crmProductionJobs,
   orderItems,
+  orderRemarks,
   orders,
   users,
 } from '../database/schema';
 import { DATABASE_CONNECTION } from '../database/database.module';
 import { CrmBaseService } from '../crm-base/crm-base.service';
 import { CrmOrdersService } from '../crm-orders/crm-orders.service';
+import { assignedStaffRoles } from '../auth/crm-role-map';
 import {
   AddPlancheOrdersDto,
   CreateCrmPlancheDto,
@@ -252,6 +254,32 @@ export class CrmProductionService extends CrmBaseService {
     }
     if (!user?.id) {
       throw new ForbiddenException('Utilisateur requis');
+    }
+
+    const remarkRows = await this.db
+      .select({
+        orderId: orderRemarks.orderId,
+        role: users.role,
+        staffRoles: users.staffRoles,
+      })
+      .from(orderRemarks)
+      .innerJoin(users, eq(users.id, orderRemarks.authorId))
+      .where(inArray(orderRemarks.orderId, orderIds));
+    const needsRead = new Set<string>();
+    for (const row of remarkRows) {
+      const roles = assignedStaffRoles({
+        role: row.role,
+        staffRoles: row.staffRoles,
+      });
+      if (roles.includes('confirmation')) {
+        needsRead.add(row.orderId);
+      }
+    }
+    const readIds = new Set(dto.readOrderIds || []);
+    if ([...needsRead].some((orderId) => orderIds.includes(orderId) && !readIds.has(orderId))) {
+      throw new BadRequestException(
+        'Confirmez avoir lu les remarques de confirmation avant d’ajouter la commande à la planche.',
+      );
     }
 
     await this.db.insert(crmPlancheOrders).values(

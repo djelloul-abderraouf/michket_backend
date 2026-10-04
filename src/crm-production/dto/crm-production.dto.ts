@@ -97,6 +97,12 @@ export class AddPlancheOrdersDto {
   @ArrayMinSize(1)
   @IsUUID('all', { each: true })
   orderIds!: string[];
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsUUID('all', { each: true })
+  readOrderIds?: string[];
 }
 
 export class UpdateCrmPlancheStatusDto {
