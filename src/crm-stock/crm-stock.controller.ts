@@ -23,8 +23,8 @@ import {
   UpdateStockItemDto,
 } from './dto/crm-stock.dto';
 
-const viewers = ['admin', 'fabrication', 'commercial', 'preparation'] as const;
-const editors = ['admin', 'fabrication'] as const;
+const viewers = ['admin', 'fabrication', 'preparation'] as const;
+const editors = ['admin', 'fabrication', 'preparation'] as const;
 
 @ApiTags('CRM Stock')
 @Controller('crm/stock')

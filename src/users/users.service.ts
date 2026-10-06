@@ -588,6 +588,7 @@ export class UsersService {
       .set(updateData)
       .where(eq(users.id, userId));
 
+    this.authService.invalidateUserCache(userId);
     return this.findById(userId);
   }
 

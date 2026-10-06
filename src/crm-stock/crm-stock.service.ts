@@ -71,6 +71,7 @@ export class CrmStockService extends CrmBaseService {
       name,
       category: dto.category?.trim() || '',
       itemType: dto.itemType,
+      usage: dto.usage || (dto.itemType === 'produit_fini' ? 'vente' : 'alimentation'),
       unit: dto.unit?.trim() || 'pcs',
       minQuantity: this.qty(dto.minQuantity ?? 0),
       catalogProductId: dto.catalogProductId || null,
@@ -93,6 +94,7 @@ export class CrmStockService extends CrmBaseService {
       name: dto.name?.trim() || current.name,
       category: dto.category !== undefined ? dto.category.trim() : current.category,
       itemType: dto.itemType || current.itemType,
+      usage: dto.usage || current.usage,
       unit: dto.unit?.trim() || current.unit,
       minQuantity: dto.minQuantity !== undefined ? this.qty(dto.minQuantity) : current.minQuantity,
       catalogProductId: dto.catalogProductId === undefined ? current.catalogProductId : dto.catalogProductId,
@@ -358,7 +360,13 @@ export class CrmStockService extends CrmBaseService {
   }
 
   async applyOrderSale(orderId: string, user?: Actor) {
-    const empty = { deducted: [] as Array<{ itemId: string; name: string; quantity: number }>, unmatched: [] as string[], withoutRecipe: [] as string[], alerts: [] as Array<{ id: string; name: string; currentQuantity: number; minQuantity: number; stockStatus: 'low' | 'out' }> };
+    const empty = {
+      deducted: [] as Array<{ itemId: string; name: string; quantity: number }>,
+      unmatched: [] as string[],
+      withoutRecipe: [] as string[],
+      withoutSupply: [] as string[],
+      alerts: [] as Array<{ id: string; name: string; currentQuantity: number; minQuantity: number; stockStatus: 'low' | 'out' }>,
+    };
     const [order] = await this.db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
     if (!order) return empty;
     const lines = await this.db
@@ -371,41 +379,23 @@ export class CrmStockService extends CrmBaseService {
       })
       .from(orderItems)
       .where(eq(orderItems.orderId, orderId));
-    const { needed, unmatched, withoutRecipe } = await this.salesNeeds(lines);
+    const sales = await this.recipeNeeds('sales', lines);
+    const supply = await this.recipeNeeds('manufacturing', lines);
     const actorName = await this.actorName(user);
     const items = await this.db.select().from(stockItems);
     const names = new Map(items.map((item) => [item.id, item.name]));
-    const existing = await this.db
-      .select()
-      .from(stockMovements)
-      .where(and(
-        eq(stockMovements.sourceType, 'order'),
-        eq(stockMovements.sourceId, orderId),
-        eq(stockMovements.movementType, 'sale'),
-      ));
-    const reversed = await this.reversedIds(existing.map((movement) => movement.id));
-    const deducted: Array<{ itemId: string; name: string; quantity: number }> = [];
-    for (const [itemId, quantity] of needed) {
-      const sales = existing.filter((movement) => movement.itemId === itemId);
-      if (sales.some((movement) => !reversed.has(movement.id))) continue;
-      const created = await this.insertMovement(this.db, {
-        itemId,
-        movementType: 'sale',
-        delta: -quantity,
-        sourceType: 'order',
-        sourceId: orderId,
-        sourceRef: order.reference,
-        note: `Vente ${order.reference}`,
-        idempotencyKey: `sale:${orderId}:${itemId}:${sales.length + 1}`,
-        user,
-        actorName,
-      });
-      if (created) {
-        deducted.push({ itemId, name: names.get(itemId) || 'Article', quantity: this.round(quantity) });
-      }
-    }
-    const alerts = await this.alertsFor(items, [...needed.keys()]);
-    return { deducted, unmatched, withoutRecipe, alerts };
+    const deducted = [
+      ...await this.consumeOrder(order, sales.needed, 'sale', 'Vente', user, actorName, names),
+      ...await this.consumeOrder(order, supply.needed, 'manufacturing_consumption', 'Alimentation', user, actorName, names),
+    ];
+    const alerts = await this.alertsFor(items, [...sales.needed.keys(), ...supply.needed.keys()]);
+    return {
+      deducted,
+      unmatched: [...new Set([...sales.unmatched, ...supply.unmatched])],
+      withoutRecipe: sales.withoutRecipe,
+      withoutSupply: supply.withoutRecipe,
+      alerts,
+    };
   }
 
   async reverseOrderSale(orderId: string, user?: Actor) {
@@ -415,7 +405,7 @@ export class CrmStockService extends CrmBaseService {
       .where(and(
         eq(stockMovements.sourceType, 'order'),
         eq(stockMovements.sourceId, orderId),
-        eq(stockMovements.movementType, 'sale'),
+        inArray(stockMovements.movementType, ['sale', 'manufacturing_consumption']),
       ));
     if (originals.length === 0) return;
     const reversed = await this.reversedIds(originals.map((movement) => movement.id));
@@ -429,7 +419,7 @@ export class CrmStockService extends CrmBaseService {
         sourceType: 'order',
         sourceId: orderId,
         sourceRef: movement.sourceRef,
-        note: `Annulation vente ${movement.sourceRef || orderId}`,
+        note: `Annulation stock ${movement.sourceRef || orderId}`,
         idempotencyKey: `sale-reversal:${movement.id}`,
         reversesMovementId: movement.id,
         user,
@@ -442,7 +432,49 @@ export class CrmStockService extends CrmBaseService {
     return IN_FLOW.has(dbStatus);
   }
 
-  private async salesNeeds(lines: Array<{
+  private async consumeOrder(
+    order: { id: string; reference: string | null },
+    needed: Map<string, number>,
+    movementType: 'sale' | 'manufacturing_consumption',
+    label: string,
+    user: Actor | undefined,
+    actorName: string,
+    names: Map<string, string>,
+  ) {
+    const existing = await this.db
+      .select()
+      .from(stockMovements)
+      .where(and(
+        eq(stockMovements.sourceType, 'order'),
+        eq(stockMovements.sourceId, order.id),
+        eq(stockMovements.movementType, movementType),
+      ));
+    const reversed = await this.reversedIds(existing.map((movement) => movement.id));
+    const deducted: Array<{ itemId: string; name: string; quantity: number }> = [];
+    const prefix = movementType === 'sale' ? 'sale' : 'supply';
+    for (const [itemId, quantity] of needed) {
+      const prior = existing.filter((movement) => movement.itemId === itemId);
+      if (prior.some((movement) => !reversed.has(movement.id))) continue;
+      const created = await this.insertMovement(this.db, {
+        itemId,
+        movementType,
+        delta: -quantity,
+        sourceType: 'order',
+        sourceId: order.id,
+        sourceRef: order.reference,
+        note: `${label} ${order.reference}`,
+        idempotencyKey: `${prefix}:${order.id}:${itemId}:${prior.length + 1}`,
+        user,
+        actorName,
+      });
+      if (created) {
+        deducted.push({ itemId, name: names.get(itemId) || 'Article', quantity: this.round(quantity) });
+      }
+    }
+    return deducted;
+  }
+
+  private async recipeNeeds(kind: 'manufacturing' | 'sales', lines: Array<{
     productId: string | null;
     productName: string;
     variantName?: string | null;
@@ -450,7 +482,7 @@ export class CrmStockService extends CrmBaseService {
     quantity: number;
   }>) {
     const items = await this.db.select().from(stockItems);
-    const recipes = await this.db.select().from(stockRecipes).where(eq(stockRecipes.kind, 'sales'));
+    const recipes = await this.db.select().from(stockRecipes).where(eq(stockRecipes.kind, kind));
     const activeRecipes = recipes.filter((recipe) => recipe.active);
     const recipeIds = activeRecipes.map((recipe) => recipe.id);
     const recipeLines = recipeIds.length
@@ -534,6 +566,7 @@ export class CrmStockService extends CrmBaseService {
     return itemIds.flatMap((itemId) => {
       const item = items.find((row) => row.id === itemId);
       if (!item || !item.active) return [];
+      if (item.itemType !== 'composant' && item.itemType !== 'semi_fini') return [];
       const current = this.round(balances.get(itemId) ?? 0);
       const minQuantity = this.num(item.minQuantity);
       const stockStatus = this.stockStatus(current, minQuantity);
@@ -713,10 +746,11 @@ export class CrmStockService extends CrmBaseService {
       name: item.name,
       category: item.category,
       itemType: item.itemType as StockItemType,
+      usage: item.usage || 'alimentation',
       unit: item.unit,
       minQuantity,
       currentQuantity: current,
-      stockStatus: this.stockStatus(current, minQuantity),
+      stockStatus: item.itemType === 'produit_fini' ? 'ok' : this.stockStatus(current, minQuantity),
       catalogProductId: item.catalogProductId,
       active: item.active,
     };

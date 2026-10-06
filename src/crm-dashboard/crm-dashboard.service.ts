@@ -179,6 +179,16 @@ export class CrmDashboardService extends CrmBaseService {
       .where(where)
       .groupBy(orders.deliveryType);
 
+    const orderKindBreakdown = await this.db
+      .select({
+        orderKind: orders.orderKind,
+        count: sql<number>`count(*)::int`,
+        total: sql<number>`coalesce(sum(total_cents), 0)::int`,
+      })
+      .from(orders)
+      .where(where)
+      .groupBy(orders.orderKind);
+
     const topWilayas = await this.db
       .select({
         wilaya: orders.wilayaName,
@@ -295,6 +305,11 @@ export class CrmDashboardService extends CrmBaseService {
       })),
       deliveryTypeBreakdown: deliveryTypeBreakdown.map((item) => ({
         type: item.deliveryType === 'office' ? 'Stop desk' : 'Domicile',
+        count: item.count,
+        total: centsToDzd(item.total),
+      })),
+      orderKindBreakdown: orderKindBreakdown.map((item) => ({
+        kind: item.orderKind || 'non_defini',
         count: item.count,
         total: centsToDzd(item.total),
       })),

@@ -364,6 +364,10 @@ export const orderContactAttempts = pgTable(
 
     notes: text('notes').notNull(),
 
+    outcome: text('outcome'),
+
+    checked: boolean('checked').notNull().default(false),
+
     employeeId: uuid('employee_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
@@ -381,6 +385,10 @@ export const orderContactAttempts = pgTable(
     check(
       'order_contact_attempts_number_range',
       sql`${table.attemptNumber} BETWEEN 1 AND 5`,
+    ),
+    check(
+      'order_contact_attempts_outcome_check',
+      sql`${table.outcome} IS NULL OR ${table.outcome} IN ('pas_de_reponse', 'confirme', 'annule')`,
     ),
   ],
 );

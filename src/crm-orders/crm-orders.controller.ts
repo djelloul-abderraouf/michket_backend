@@ -23,6 +23,7 @@ import { CurrentCrmUser } from '../common/decorators/current-crm-user.decorator'
 import { CrmOrdersService } from './crm-orders.service';
 import {
   CreateContactAttemptDto,
+  UpdateContactAttemptDto,
   CreateCrmOrderDto,
   CreateOrderRemarkDto,
   UpdateCrmOrderDuplicateDto,
@@ -146,7 +147,7 @@ export class CrmOrdersController {
 
   @Post(':id/remarks')
   @ApiOperation({ summary: 'Add a remark the author can later remove' })
-  @CrmRoles('admin', 'commercial', 'livraison', 'confirmation', 'fabrication', 'preparation')
+  @CrmRoles('admin', 'commercial')
   async addRemark(
     @Param('id') id: string,
     @Body() body: CreateOrderRemarkDto,
@@ -157,7 +158,7 @@ export class CrmOrdersController {
 
   @Delete(':id/remarks/:remarkId')
   @ApiOperation({ summary: 'Remove a remark written by the current user' })
-  @CrmRoles('admin', 'commercial', 'livraison', 'confirmation', 'fabrication', 'preparation')
+  @CrmRoles('admin', 'commercial')
   async deleteRemark(
     @Param('id') id: string,
     @Param('remarkId') remarkId: string,
@@ -174,7 +175,19 @@ export class CrmOrdersController {
     @Body() body: CreateContactAttemptDto,
     @CurrentCrmUser() crmUser: any,
   ) {
-    return this.crmOrdersService.addContactAttempt(id, body.notes, crmUser);
+    return this.crmOrdersService.addContactAttempt(id, body, crmUser);
+  }
+
+  @Put(':id/contact-attempts/:attemptId')
+  @ApiOperation({ summary: 'Update the result or checkbox of a contact attempt' })
+  @CrmRoles('admin', 'livraison')
+  async updateContactAttempt(
+    @Param('id') id: string,
+    @Param('attemptId') attemptId: string,
+    @Body() body: UpdateContactAttemptDto,
+    @CurrentCrmUser() crmUser: any,
+  ) {
+    return this.crmOrdersService.updateContactAttempt(id, attemptId, body, crmUser);
   }
 
   @Post()

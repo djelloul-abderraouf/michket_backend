@@ -722,13 +722,20 @@ export class CrmOrdersService extends CrmBaseService {
     return this.findById(orderId);
   }
 
-  async addContactAttempt(id: string, notes: string, user?: CrmUserContext) {
+  async addContactAttempt(
+    id: string,
+    input: { notes: string; outcome: 'pas_de_reponse' | 'confirme' | 'annule'; checked: boolean },
+    user?: CrmUserContext,
+  ) {
     if (!user?.id) {
       throw new ForbiddenException('Utilisateur requis');
     }
-    const text = notes.trim();
+    const text = input.notes.trim();
     if (!text) {
       throw new BadRequestException('La note de tentative est obligatoire.');
+    }
+    if (!input.checked) {
+      throw new BadRequestException('Cochez la tentative avant de l\'enregistrer.');
     }
 
     const [order] = await this.db
@@ -761,10 +768,42 @@ export class CrmOrdersService extends CrmBaseService {
       orderId: id,
       attemptNumber,
       notes: text,
+      outcome: input.outcome,
+      checked: true,
       employeeId: user.id,
     });
 
     return this.findById(id);
+  }
+
+  async updateContactAttempt(
+    orderId: string,
+    attemptId: string,
+    input: { outcome?: 'pas_de_reponse' | 'confirme' | 'annule'; checked?: boolean },
+    user?: CrmUserContext,
+  ) {
+    if (!user?.id) {
+      throw new ForbiddenException('Utilisateur requis');
+    }
+    const [attempt] = await this.db
+      .select()
+      .from(orderContactAttempts)
+      .where(eq(orderContactAttempts.id, attemptId))
+      .limit(1);
+    if (!attempt || attempt.orderId !== orderId) {
+      throw new NotFoundException('Tentative introuvable.');
+    }
+    if (input.outcome === undefined && input.checked === undefined) {
+      throw new BadRequestException('Aucun changement à enregistrer.');
+    }
+    await this.db
+      .update(orderContactAttempts)
+      .set({
+        outcome: input.outcome ?? attempt.outcome,
+        checked: input.checked ?? attempt.checked,
+      })
+      .where(eq(orderContactAttempts.id, attemptId));
+    return this.findById(orderId);
   }
 
   private async findContactByPhone(phone: string) {
@@ -882,7 +921,15 @@ export class CrmOrdersService extends CrmBaseService {
 
     const [contactRows, phoneRows] = await Promise.all([
       this.db.select().from(crmContacts),
-      this.db.select({ id: orders.id, phone: orders.phone }).from(orders),
+      this.db
+        .select({
+          id: orders.id,
+          phone: orders.phone,
+          reference: orders.reference,
+          status: orders.status,
+          createdAt: orders.createdAt,
+        })
+        .from(orders),
     ]);
 
     const contactByPhone = new Map(
@@ -891,12 +938,16 @@ export class CrmOrdersService extends CrmBaseService {
         .filter(([key]) => key.length > 0),
     );
     const orderCountByPhone = new Map<string, number>();
+    const ordersByPhone = new Map<string, typeof phoneRows>();
     for (const row of phoneRows) {
       const key = phoneKey(row.phone);
       if (!key) {
         continue;
       }
       orderCountByPhone.set(key, (orderCountByPhone.get(key) || 0) + 1);
+      const list = ordersByPhone.get(key) || [];
+      list.push(row);
+      ordersByPhone.set(key, list);
     }
 
     return orderRows.map((order) => {
@@ -929,6 +980,16 @@ export class CrmOrdersService extends CrmBaseService {
         clientType: contact?.type ?? null,
         isExistingClient: previousOrderCount > 0,
         previousOrderCount,
+        relatedOrders: (ordersByPhone.get(clientPhoneKey) || [])
+          .filter((row) => row.id !== order.id)
+          .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+          .slice(0, 8)
+          .map((row) => ({
+            id: row.id,
+            reference: row.reference,
+            status: toCrmOrderStatus(row.status),
+            createdAt: this.toIso(row.createdAt) ?? new Date().toISOString(),
+          })),
         duplicateStatus: resolveDuplicateStatus(
           previousOrderCount,
           order.duplicateReview,
@@ -991,6 +1052,8 @@ export class CrmOrdersService extends CrmBaseService {
             id: attempt.id,
             attemptNumber: attempt.attemptNumber,
             notes: attempt.notes,
+            outcome: attempt.outcome,
+            checked: attempt.checked,
             employeeId: attempt.employeeId,
             employeeName: authors.get(attempt.employeeId) ?? 'Equipe',
             createdAt:

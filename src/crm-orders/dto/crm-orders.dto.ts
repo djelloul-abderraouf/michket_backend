@@ -3,6 +3,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsNumber,
+  IsBoolean,
   IsIn,
   Min,
   MaxLength,
@@ -173,10 +174,32 @@ export class CreateOrderRemarkDto {
   body!: string;
 }
 
+const contactOutcomes = ['pas_de_reponse', 'confirme', 'annule'] as const;
+
 export class CreateContactAttemptDto {
   @ApiProperty()
   @IsString()
   @IsNotEmpty()
   @MaxLength(1000)
   notes!: string;
+
+  @ApiProperty({ enum: contactOutcomes })
+  @IsIn(contactOutcomes)
+  outcome!: (typeof contactOutcomes)[number];
+
+  @ApiProperty()
+  @IsBoolean()
+  checked!: boolean;
+}
+
+export class UpdateContactAttemptDto {
+  @ApiPropertyOptional({ enum: contactOutcomes })
+  @IsOptional()
+  @IsIn(contactOutcomes)
+  outcome?: (typeof contactOutcomes)[number];
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  checked?: boolean;
 }

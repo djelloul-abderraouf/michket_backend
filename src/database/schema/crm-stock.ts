@@ -38,6 +38,7 @@ export const stockItems = pgTable('crm_stock_items', {
   name: text('name').notNull(),
   category: text('category').notNull().default(''),
   itemType: text('item_type').$type<StockItemType>().notNull(),
+  usage: text('usage').$type<'alimentation' | 'vente' | 'les_deux'>().notNull().default('alimentation'),
   unit: text('unit').notNull().default('pcs'),
   minQuantity: numeric('min_quantity', { precision: 12, scale: 3 }).notNull().default('0'),
   catalogProductId: uuid('catalog_product_id').references(() => products.id, { onDelete: 'set null' }),

@@ -14,6 +14,7 @@ import {
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 const itemTypes = ['matiere', 'composant', 'semi_fini', 'produit_fini'] as const;
+const itemUsages = ['alimentation', 'vente', 'les_deux'] as const;
 const manualMovements = ['restock', 'adjustment', 'loss', 'return'] as const;
 const recipeKinds = ['manufacturing', 'sales'] as const;
 
@@ -30,6 +31,11 @@ export class CreateStockItemDto {
   @ApiProperty({ enum: itemTypes })
   @IsIn(itemTypes)
   itemType!: (typeof itemTypes)[number];
+
+  @ApiPropertyOptional({ enum: itemUsages })
+  @IsOptional()
+  @IsIn(itemUsages)
+  usage?: (typeof itemUsages)[number];
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -69,6 +75,11 @@ export class UpdateStockItemDto {
   @IsOptional()
   @IsIn(itemTypes)
   itemType?: (typeof itemTypes)[number];
+
+  @ApiPropertyOptional({ enum: itemUsages })
+  @IsOptional()
+  @IsIn(itemUsages)
+  usage?: (typeof itemUsages)[number];
 
   @ApiPropertyOptional()
   @IsOptional()
